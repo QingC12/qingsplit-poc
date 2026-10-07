@@ -431,15 +431,23 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 // ----------------------------------------------------------------------------
 // 主流程
 // ----------------------------------------------------------------------------
+// v0.1.7: 触摸穿透 —— 浮窗背景区域返回 nil（穿透到下层窗口），
+// 只让 host view 区域响应。否则全屏窗口会拦截整个屏幕的触摸。
+@interface POCView : UIView
+@end
+@implementation POCView
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = [super hitTest:point withEvent:event];
+    if (!h || h == self) return nil;
+    return h;
+}
+@end
+
 @interface POCController : UIViewController
 @end
 @implementation POCController
-// v0.1.7: 触摸穿透 —— 浮窗背景区域返回 nil（穿透到下层窗口），
-// 只让 host view 区域响应。否则全屏窗口会拦截整个屏幕的触摸。
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *h = [super hitTest:point withEvent:event];
-    if (!h || h == self.view) return nil;
-    return h;
+- (void)loadView {
+    self.view = [[POCView alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 }
 @end
 
