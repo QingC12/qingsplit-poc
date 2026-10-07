@@ -68,15 +68,28 @@ jobs:
           cat > QingSplitPrefsRootListController.m <<'EOF'
           #import <Foundation/Foundation.h>
           #import <UIKit/UIKit.h>
-          #import <objc/message.h>
           #import <objc/runtime.h>
 
+          // v0.4.4: 动态类无 bundle 关联，loadSpecifiersFromPlistName: 的 bundleForClass 返回 nil
+          // → 手动从 QingSplitPrefs.bundle 加载 Root.plist（多路径兜底）
           static id qs_specifiers(id self, SEL _cmd) {
               id sp = [self valueForKey:@"_specifiers"];
               if (!sp) {
-                  SEL sel = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:");
-                  id (*msg)(id, SEL, id, id) = (id (*)(id, SEL, id, id))objc_msgSend;
-                  sp = msg(self, sel, @"Root", self);
+                  NSString *path = nil;
+                  for (NSBundle *b in [NSBundle allBundles]) {
+                      if ([[b bundlePath] hasSuffix:@"/QingSplitPrefs.bundle"]) {
+                          path = [b pathForResource:@"Root" ofType:@"plist"];
+                          break;
+                      }
+                  }
+                  if (!path || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+                      path = @"/var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist";
+                  }
+                  if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+                      path = @"/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist";
+                  }
+                  sp = [NSArray arrayWithContentsOfFile:path];
+                  if (!sp) sp = @[];
                   [self setValue:sp forKey:@"_specifiers"];
               }
               return sp;
@@ -117,5 +130,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.3_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.4_iphoneos-arm64e.deb
           if-no-files-found: warn
