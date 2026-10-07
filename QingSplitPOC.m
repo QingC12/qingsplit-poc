@@ -1744,12 +1744,24 @@ static void poc_picker_show(void) {
             UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 220, rowH)];
             row.tag = 0;
             row.backgroundColor = [UIColor clearColor];   // v0.4.19: 默认透明，跟手高亮时改色
-            // 图标：1) LSApplicationProxy iconDataForVariant: 2) UIImage 私有 3) 仅文本
+            // 图标/名称：1) LSApplicationProxy iconDataForVariant: 2) UIImage 私有 3) 仅文本（名称用 localizedName 优于 bundle id）
             UIImage *icon = nil;
+            NSString *appName = nil;
             @try {
                 id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
                 if (proxy) {
+                    id nm = [proxy performSelector:@selector(localizedName)];
+                    if ([nm isKindOfClass:[NSString class]] && [(NSString *)nm length]) appName = nm;
+                    // 变体1：iconDataForVariant:@"2x"（iOS15+）
                     NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
+                    if (!([d isKindOfClass:[NSData class]] && d.length)) {
+                        // 变体2：iconDataForVariant:scale:（带 scale 双参）
+                        SEL s2 = sel_registerName("iconDataForVariant:scale:");
+                        if ([proxy respondsToSelector:s2]) {
+                            NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
+                            d = fn(proxy, s2, @"2x", 2.0);
+                        }
+                    }
                     if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
                 }
             } @catch (NSException *e) { icon = nil; }
@@ -1772,7 +1784,7 @@ static void poc_picker_show(void) {
                 [txtWrap addSubview:iv];
             }
             UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(icon ? 46 : 0, (rowH - 18) / 2.0, 150, 18)];
-            lbl.text = a[@"bundle"];
+            lbl.text = appName.length ? appName : a[@"bundle"];
             lbl.textColor = [UIColor whiteColor];
             lbl.font = [UIFont systemFontOfSize:14];
             lbl.adjustsFontSizeToFitWidth = YES;
@@ -1844,7 +1856,7 @@ static void poc_setup_edge_trigger(void) {
 @implementation POCBootstrap
 + (void)poc_edge_panned:(UIPanGestureRecognizer *)g {
     // v0.4.19: 跟手选择 —— 滑入弹选择器，手指在面板内上下移动高亮当前行，松手确认/关闭
-    CGPoint p = [g locationInView:g.view];   // rootView 坐标 = 屏幕坐标
+    CGPoint p = [g locationInView:g.view.window];   // v0.4.23: 窗口坐标=屏幕坐标（g.view 是触发条，其相对坐标与行判定空间不一致）
     if (g.state == UIGestureRecognizerStateBegan) {
         if (g_pickerPanel && !g_pickerPanel.hidden) poc_picker_hide();   // 重复滑入先收旧面板
         return;
@@ -1912,7 +1924,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.22 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.23 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
