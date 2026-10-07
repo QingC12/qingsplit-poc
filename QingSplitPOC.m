@@ -701,8 +701,30 @@ static void poc_keep_float(void) {
                 actStr = [NSString stringWithFormat:@"%ld", (long)fn(targetScene, @selector(activationState))];
             }
         } @catch (NSException *e) { }
-        poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld", winAlive, hostAlive,
-                actStr, (long)newCtx, (long)g_lastCtx);
+        // v0.3.5: 二级页面诊断 —— 目标 scene 当前 layer 数 + native 尺寸（app 内导航可能新增/更换 layer）
+        NSInteger lc = 0;
+        CGSize kn = CGSizeZero;
+        NSString *ksrc = @"nil";
+        @try {
+            id lm2 = poc_tryKVC(targetScene, @[@"layerManager", @"_layerManager"]);
+            id layers2 = poc_tryKVC(lm2, @[@"layers", @"_layers", @"sceneLayers"]);
+            NSArray *arr2 = nil;
+            if ([layers2 isKindOfClass:[NSArray class]]) arr2 = layers2;
+            else if ([layers2 isKindOfClass:[NSSet class]]) arr2 = [layers2 allObjects];
+            else if ([layers2 isKindOfClass:[NSOrderedSet class]]) arr2 = [layers2 array];
+            else if ([layers2 respondsToSelector:@selector(allObjects)]) arr2 = [layers2 allObjects];
+            lc = arr2.count;
+            for (id l in arr2) {
+                NSString *t2 = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
+                if ([t2 isEqualToString:@"0"]) {
+                    kn = poc_layer_native_size(l);
+                    if (kn.width > 0) { ksrc = @"layer"; break; }
+                }
+            }
+            if (kn.width <= 0) { kn = [[UIScreen mainScreen] bounds].size; ksrc = @"screen"; }
+        } @catch (NSException *e) { }
+        poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld lc=%ld native=%@ src=%@", winAlive, hostAlive,
+                actStr, (long)newCtx, (long)g_lastCtx, (long)lc, NSStringFromCGSize(kn), ksrc);
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
         if (newCtx == 0) {
             poc_probe_scene_apis(targetScene);
@@ -846,16 +868,22 @@ static void poc_try_float(void) {
         // 3.1 v0.3.0: 浮窗容器（边框拖动/缩放）+ host view 作为内容
         // v0.3.3: 记录 scene layer 原始尺寸 → 容器 contain 等比缩放（内容不拉伸变形）
         // v0.3.4: native 获取失败 → 屏幕尺寸兜底（全屏 app 的 scene layer ≈ 屏幕）
+        // v0.3.5: 初始容器按 native 比例（避免 contain 灰边过宽）
         CGSize native = poc_layer_native_size(layer);
         NSString *nsrc = @"layer";
         if (native.width <= 0 || native.height <= 0) {
             native = [[UIScreen mainScreen] bounds].size;
             nsrc = @"screen-fallback";
         }
+        CGFloat cw = 340, ch = 500;
+        if (native.width > 0 && native.height > 0) {
+            ch = cw * (native.height / native.width);
+            if (ch > 860) { ch = 860; cw = ch * (native.width / native.height); }
+        }
         QSFloatContainer *container = [[QSFloatContainer alloc]
-            initWithFrame:CGRectMake((g_win.bounds.size.width - 340) / 2.0,
-                                     (g_win.bounds.size.height - 500) / 2.0,
-                                     340, 500)];
+            initWithFrame:CGRectMake((g_win.bounds.size.width - cw) / 2.0,
+                                     (g_win.bounds.size.height - ch) / 2.0,
+                                     cw, ch)];
         container.nativeContentSize = native;
         container.contentView = hv;   // layoutSubviews 安排 14px 内边距 + contain 等比
         [vc.view addSubview:container];
