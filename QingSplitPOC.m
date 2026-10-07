@@ -1799,23 +1799,18 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
+        // v0.4.17: 右缘透明接收条（40px 宽，y 150-750）—— 触摸直接命中本窗口（level 998 最上层），
+        // 手势必然进入命中链（v0.4.16 挂 SB key window 失败：后加手势不在 SB 手势环境命中链）
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 40, 150, 40, 600)];
+        strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
+        UIScreenEdgePanGestureRecognizer *ep = [[UIScreenEdgePanGestureRecognizer alloc]
+                                                initWithTarget:[POCBootstrap class]
+                                                action:@selector(poc_edge_panned:)];
+        ep.edges = UIRectEdgeRight;
+        [strip addGestureRecognizer:ep];
+        [vc.view addSubview:strip];
         g_triggerWin.hidden = NO;
-        // 右缘滑入手势 → SB 主 window（右侧中段 y∈[150,750]，避开控制中心右上角）
-        UIWindow *sbWin = nil;
-        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
-            if (w.isKeyWindow) { sbWin = w; break; }
-        }
-        if (!sbWin) sbWin = [[[UIApplication sharedApplication] delegate] window];
-        if (sbWin) {
-            UIScreenEdgePanGestureRecognizer *ep = [[UIScreenEdgePanGestureRecognizer alloc]
-                                                    initWithTarget:[POCBootstrap class]
-                                                    action:@selector(poc_edge_panned:)];
-            ep.edges = UIRectEdgeRight;
-            [sbWin addGestureRecognizer:ep];
-            poc_log(@"EDGE_TRIGGER armed window=%@", poc_cls(sbWin));
-        } else {
-            poc_log(@"EDGE_TRIGGER no sb window");
-        }
+        poc_log(@"EDGE_TRIGGER armed strip=%@", NSStringFromCGRect(strip.frame));
     } @catch (NSException *e) {
         poc_log(@"EDGE_TRIGGER_EXC %@", e.name);
     }
@@ -1839,7 +1834,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.16 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.17 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
