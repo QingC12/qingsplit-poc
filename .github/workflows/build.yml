@@ -1,0 +1,73 @@
+name: Build QingSplitPOC (arm64e new-ABI)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ldid
+        run: |
+          brew install ldid make
+
+      - name: Show Xcode & SDK
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Compile arm64e (new ABI) dylib with Xcode clang/ld
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK = $SDK"
+          export SDKROOT="$SDK"
+
+          # 编译 ObjC 源文件为 arm64e 目标文件
+          xcrun --sdk iphoneos clang \
+            -arch arm64e \
+            -isysroot "$SDK" \
+            -fobjc-arc \
+            -miphoneos-version-min=15.0 \
+            -fmodules \
+            -c QingSplitPOC.m \
+            -o QingSplitPOC.o
+
+          # 用 Xcode 原生 ld 链接出 dylib（带 chained fixups / caps 0x2）
+          xcrun --sdk iphoneos clang \
+            -arch arm64e \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=15.0 \
+            -dynamiclib \
+            -Xlinker -fixup_chains \
+            -install_name "/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib" \
+            -framework Foundation \
+            -framework UIKit \
+            QingSplitPOC.o \
+            -o QingSplitPOC.dylib
+
+          echo "=== dylib 架构验证（期望 arm64e / caps: 0x2）==="
+          file QingSplitPOC.dylib
+          echo "=== 检查 load commands（看是否有 LC_DYLD_CHAINED_FIXUPS）==="
+          otool -l QingSplitPOC.dylib | grep -A2 -i "chained"
+
+      - name: Sign dylib
+        run: |
+          ldid -S QingSplitPOC.dylib
+
+      - name: Package deb (var/jb rootless layout)
+        run: |
+          python3 package.py
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QingSplitPOC-deb
+          path: |
+            QingSplitPOC_0.1.0_iphoneos-arm64e.deb
+          if-no-files-found: warn
