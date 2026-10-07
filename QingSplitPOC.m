@@ -1456,6 +1456,8 @@ static void poc_try_float(void) {
     // v0.4.15: 手动触发 —— 只有"浮"按钮被按下才尝试建浮窗；不再每次自动弹
     if (!g_triggerArmed) return;
     g_triggerArmed = NO;
+    // v0.4.20: 手动选择覆盖"关闭保持"—— 用户明确点选应用，即使 g_floatClosed=YES（曾点 ×）也必须建浮窗
+    g_floatClosed = NO;
 
     // 1. 确定目标
     // v0.4.16: 手动选择（右缘滑动选择器）优先 > 设置 targets > /tmp/qsp_target（兼容）
@@ -1804,8 +1806,8 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.19: 右缘触发条（36px 宽 × 200 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 36, 366, 36, 200)];
+        // v0.4.20: 右缘触发条（28px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 28, 391, 28, 150)];
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
         strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
@@ -1879,7 +1881,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.19 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.20 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
