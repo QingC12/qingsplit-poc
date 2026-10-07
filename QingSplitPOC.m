@@ -1695,11 +1695,17 @@ static void poc_try_float(void) {
 }
 
 // 注入入口：延迟 5s 启动，之后每 1s 尝试一次（等待手动触发/目标 App scene 出现）
-@interface POCBootstrap : NSObject
+// v0.4.26: 实现 UICollectionView 协议 —— Myrtle 风格图标网格选择器（点击即选 + 跟手高亮）
+@interface POCBootstrap : NSObject <UICollectionViewDataSource, UICollectionViewDelegate>
 @end
 
-// v0.4.16: 屏幕右侧滑动选择器（Stheno 风格）—— 右缘滑入 → 弹出运行中 App 列表 → 点选进浮窗
+// v0.4.16: 屏幕右侧滑动选择器（Stheno 风格）—— 右缘滑入 → 弹出 App 网格 → 点选/跟手进浮窗
 static UIViewController *g_pickerVC = nil;   // 承载面板的控制器（trigger window 的 rootVC 动态创建）
+static UICollectionView *g_pickerGrid = nil;   // v0.4.26: Myrtle 风格图标网格
+static NSArray *g_pickerApps = nil;            // v0.4.26: 网格数据（poc_all_apps 快照）
+static POCBootstrap *g_pickerDelegate = nil;   // v0.4.26: 网格数据源/代理实例
+static UISelectionFeedbackGenerator *g_pickerSelFB = nil;   // v0.4.26: 触觉反馈（Myrtle 特征）
+static UIImpactFeedbackGenerator *g_pickerImpFB = nil;
 
 static void poc_picker_hide(void) {
     @try {
@@ -1811,14 +1817,14 @@ static void poc_picker_show(void) {
             g_triggerWin.rootViewController = vc;
             g_pickerVC = vc;
         }
-        // 面板 —— v0.4.25: 固定 220 宽、可见 6 行（300pt 滚动区），全部应用可滚动浏览；圆角 20 面板
+        // 面板 —— v0.4.26: Myrtle 风格图标网格（4 列 × 55×90 cell，可见 3 行），全部应用可滚动；圆角 20 面板
         UIView *panel = g_pickerPanel;
         NSArray *apps = poc_all_apps();                    // v0.4.24: 运行中 + 全部已安装
         NSUInteger n = apps.count ? apps.count : 1;
-        const CGFloat rowH = 50.0;                          // v0.4.25: 滚动模式固定行高
-        g_pickerRowH = rowH;
-        const CGFloat pH = 54 + 300 + 20;                   // 标题 + 可见 6 行 + padding
-        const CGFloat panelY = MIN(337, 932 - pH - 20);     // 滚动区顶部=panelY+54=391 对齐触发条
+        const CGFloat cellW = 55.0, cellH = 90.0;
+        const int cols = 4;
+        const CGFloat pH = 54 + 270 + 20;                   // 标题 + 可见 3 行(270) + padding
+        const CGFloat panelY = MIN(337, 932 - pH - 20);     // 网格区顶部=panelY+54=391 对齐触发条
         if (!panel) {
             panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, 220, pH)];
             panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
@@ -1829,114 +1835,33 @@ static void poc_picker_show(void) {
             [g_pickerVC.view addSubview:panel];
         }
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
-        g_pickerScroll = nil;
+        g_pickerGrid = nil;
         // 标题
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 12, 190, 30)];
         title.text = @"选择要悬浮的应用";
         title.textColor = [UIColor whiteColor];
         title.font = [UIFont boldSystemFontOfSize:15];
         [panel addSubview:title];
-        // 滚动列表（全部应用）
-        UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 54, 220, 300)];
-        scroll.contentSize = CGSizeMake(220, rowH * n);
-        scroll.showsVerticalScrollIndicator = NO;
-        scroll.backgroundColor = [UIColor clearColor];
-        g_pickerScroll = scroll;
-        [panel addSubview:scroll];
-        // 应用行 —— v0.4.25: 图标三级（LSApplicationProxy → SBIconController → 首字母色块兜底）
-        CGFloat y = 0;
-        NSMutableArray *rows = [NSMutableArray array];
-        NSUInteger iconsShown = 0;
-        for (NSDictionary *a in apps) {
-            UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 220, rowH)];
-            row.tag = 0;
-            row.backgroundColor = [UIColor clearColor];   // v0.4.19: 默认透明，跟手高亮时改色
-            // 名称
-            NSString *appName = nil;
-            @try {
-                id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
-                if (proxy) {
-                    id nm = [proxy performSelector:@selector(localizedName)];
-                    if ([nm isKindOfClass:[NSString class]] && [(NSString *)nm length]) appName = nm;
-                }
-            } @catch (NSException *e) { }
-            NSString *dispName = appName.length ? appName : (a[@"name"] ?: a[@"bundle"]);
-            // 图标
-            UIImage *icon = nil;
-            @try {
-                id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
-                if (proxy) {
-                    NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
-                    if (!([d isKindOfClass:[NSData class]] && d.length)) {
-                        SEL s2 = sel_registerName("iconDataForVariant:scale:");
-                        if ([proxy respondsToSelector:s2]) {
-                            NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
-                            d = fn(proxy, s2, @"2x", 2.0);
-                        }
-                    }
-                    if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
-                }
-            } @catch (NSException *e) { icon = nil; }
-            if (!icon) {
-                @try {
-                    // v0.4.25: SBIconController 链路（SpringBoard 图标权威来源）
-                    id iconCtrl = [NSClassFromString(@"SBIconController") performSelector:@selector(sharedInstance)];
-                    id model = [iconCtrl performSelector:@selector(model)];
-                    id iconObj = [model performSelector:@selector(expectedIconForDisplayIdentifier:) withObject:a[@"bundle"]];
-                    if (iconObj) {
-                        SEL fs = sel_registerName("generateIconImageWithFormat:");
-                        if ([iconObj respondsToSelector:fs]) {
-                            UIImage *(*fn)(id, SEL, NSInteger) = (UIImage *(*)(id, SEL, NSInteger))objc_msgSend;
-                            UIImage *im = fn(iconObj, fs, 0);
-                            if ([im isKindOfClass:[UIImage class]]) icon = im;
-                        }
-                    }
-                } @catch (NSException *e) { }
-            }
-            if (icon) iconsShown++;
-            UIView *txtWrap = [[UIView alloc] initWithFrame:CGRectMake(12, 0, 196, rowH)];
-            if (icon) {
-                UIImageView *iv = [[UIImageView alloc] initWithImage:icon];
-                iv.frame = CGRectMake(0, (rowH - 36) / 2.0, 36, 36);
-                iv.layer.cornerRadius = 9;
-                iv.clipsToBounds = YES;
-                [txtWrap addSubview:iv];
-            } else {
-                // v0.4.25: 首字母彩色色块兜底（100% 成功，不再裸文本）
-                UIView *block = [[UIView alloc] initWithFrame:CGRectMake(0, (rowH - 36) / 2.0, 36, 36)];
-                block.layer.cornerRadius = 9;
-                block.clipsToBounds = YES;
-                NSUInteger hsh = [dispName hash];
-                block.backgroundColor = [UIColor colorWithHue:((hsh % 360) / 360.0) saturation:0.5 brightness:0.72 alpha:1.0];
-                UILabel *ch = [[UILabel alloc] initWithFrame:block.bounds];
-                NSString *first = dispName.length ? [dispName substringToIndex:1] : @"?";
-                first = [first uppercaseString];
-                ch.text = first;
-                ch.textColor = [UIColor whiteColor];
-                ch.font = [UIFont boldSystemFontOfSize:17];
-                ch.textAlignment = NSTextAlignmentCenter;
-                [block addSubview:ch];
-                [txtWrap addSubview:block];
-            }
-            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(46, (rowH - 18) / 2.0, 150, 18)];
-            lbl.text = dispName;
-            lbl.textColor = [UIColor whiteColor];
-            lbl.font = [UIFont systemFontOfSize:14];
-            lbl.adjustsFontSizeToFitWidth = YES;
-            lbl.minimumScaleFactor = 0.6;
-            [txtWrap addSubview:lbl];
-            [row addSubview:txtWrap];
-            // 点击 → 选中（兼容点选；主交互是跟手松手确认）
-            UIButton *bt = [UIButton buttonWithType:UIButtonTypeCustom];
-            bt.frame = row.bounds;
-            bt.tag = 1000 + (NSInteger)(y / rowH);
-            [bt addTarget:[POCBootstrap class] action:@selector(poc_picker_row:) forControlEvents:UIControlEventTouchUpInside];
-            [row addSubview:bt];
-            [scroll addSubview:row];
-            [rows addObject:row];
-            y += rowH;
-        }
-        g_pickerRows = rows;   // v0.4.19: 供跟手高亮
+        // 图标网格（Myrtle 风格）
+        UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+        layout.itemSize = CGSizeMake(cellW, cellH);
+        layout.minimumInteritemSpacing = 0;
+        layout.minimumLineSpacing = 0;
+        layout.scrollDirection = UICollectionViewScrollDirectionVertical;
+        UICollectionView *grid = [[UICollectionView alloc] initWithFrame:CGRectMake(0, 54, 220, 270)
+                                                   collectionViewLayout:layout];
+        grid.backgroundColor = [UIColor clearColor];
+        grid.showsVerticalScrollIndicator = NO;
+        [grid registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"cell"];
+        if (!g_pickerDelegate) g_pickerDelegate = [[POCBootstrap alloc] init];
+        grid.dataSource = g_pickerDelegate;
+        grid.delegate = g_pickerDelegate;
+        if (!g_pickerSelFB) g_pickerSelFB = [[UISelectionFeedbackGenerator alloc] init];
+        if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
+        g_pickerApps = apps;
+        g_pickerGrid = grid;
+        [panel addSubview:grid];
+        [grid reloadData];
         // 滑入动画（spring，Stheno 风格）
         panel.frame = CGRectMake(430, panelY, 220, pH);
         panel.hidden = NO;
@@ -1944,9 +1869,105 @@ static void poc_picker_show(void) {
                             options:UIViewAnimationOptionCurveEaseOut animations:^{
             panel.frame = CGRectMake(202, panelY, 220, pH);
         } completion:nil];
-        poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f rowH=%.0f icons=%lu", (long)apps.count, panelY, rowH, (unsigned long)iconsShown);
+        poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f grid=%@", (long)apps.count, panelY, poc_cls(grid));
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
+    }
+}
+
+// v0.4.26: Myrtle 风格网格数据源/代理（实例方法）
+- (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
+    return (NSInteger)g_pickerApps.count;
+}
+- (UICollectionViewCell *)collectionView:(UICollectionView *)cv cellForItemAtIndexPath:(NSIndexPath *)ip {
+    UICollectionViewCell *cell = [cv dequeueReusableCellWithReuseIdentifier:@"cell" forIndexPath:ip];
+    cell.backgroundColor = [UIColor clearColor];
+    NSInteger idx = ip.item;
+    if (idx >= (NSInteger)g_pickerApps.count) return cell;
+    NSDictionary *a = g_pickerApps[idx];
+    // 名称
+    NSString *dispName = a[@"name"] ?: a[@"bundle"];
+    // 图标（三级：proxy → SBIcon → 色块）
+    UIImage *icon = nil;
+    @try {
+        id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
+        if (proxy) {
+            NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
+            if (!([d isKindOfClass:[NSData class]] && d.length)) {
+                SEL s2 = sel_registerName("iconDataForVariant:scale:");
+                if ([proxy respondsToSelector:s2]) {
+                    NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
+                    d = fn(proxy, s2, @"2x", 2.0);
+                }
+            }
+            if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
+        }
+    } @catch (NSException *e) { icon = nil; }
+    if (!icon) {
+        @try {
+            id iconCtrl = [NSClassFromString(@"SBIconController") performSelector:@selector(sharedInstance)];
+            id model = [iconCtrl performSelector:@selector(model)];
+            id iconObj = [model performSelector:@selector(expectedIconForDisplayIdentifier:) withObject:a[@"bundle"]];
+            if (iconObj) {
+                SEL fs = sel_registerName("generateIconImageWithFormat:");
+                if ([iconObj respondsToSelector:fs]) {
+                    UIImage *(*fn)(id, SEL, NSInteger) = (UIImage *(*)(id, SEL, NSInteger))objc_msgSend;
+                    UIImage *im = fn(iconObj, fs, 0);
+                    if ([im isKindOfClass:[UIImage class]]) icon = im;
+                }
+            }
+        } @catch (NSException *e) { }
+    }
+    UIView *iv = [cell.contentView viewWithTag:1];
+    if (!iv) {
+        iv = [[UIImageView alloc] initWithFrame:CGRectMake((55 - 44) / 2.0, 8, 44, 44)];
+        iv.tag = 1;
+        iv.layer.cornerRadius = 11;
+        iv.clipsToBounds = YES;
+        [cell.contentView addSubview:iv];
+    }
+    if ([iv isKindOfClass:[UIImageView class]]) {
+        if (icon) {
+            ((UIImageView *)iv).image = icon;
+            iv.backgroundColor = [UIColor clearColor];
+        } else {
+            // 色块兜底
+            ((UIImageView *)iv).image = nil;
+            NSUInteger hsh = [dispName hash];
+            iv.backgroundColor = [UIColor colorWithHue:((hsh % 360) / 360.0) saturation:0.5 brightness:0.72 alpha:1.0];
+            UILabel *ch = [cell.contentView viewWithTag:3];
+            if (!ch) {
+                ch = [[UILabel alloc] initWithFrame:iv.bounds];
+                ch.tag = 3;
+                ch.textColor = [UIColor whiteColor];
+                ch.font = [UIFont boldSystemFontOfSize:19];
+                ch.textAlignment = NSTextAlignmentCenter;
+                [iv addSubview:ch];
+            }
+            NSString *first = dispName.length ? [dispName substringToIndex:1] : @"?";
+            ch.text = [first uppercaseString];
+        }
+    }
+    UILabel *lbl = [cell.contentView viewWithTag:2];
+    if (!lbl) {
+        lbl = [[UILabel alloc] initWithFrame:CGRectMake(2, 56, 51, 30)];
+        lbl.tag = 2;
+        lbl.textColor = [UIColor whiteColor];
+        lbl.font = [UIFont systemFontOfSize:10];
+        lbl.textAlignment = NSTextAlignmentCenter;
+        lbl.numberOfLines = 2;
+        lbl.adjustsFontSizeToFitWidth = YES;
+        lbl.minimumScaleFactor = 0.7;
+        [cell.contentView addSubview:lbl];
+    }
+    lbl.text = dispName;
+    return cell;
+}
+- (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
+    NSInteger idx = ip.item;
+    if (idx < (NSInteger)g_pickerApps.count) {
+        if (g_pickerImpFB) [g_pickerImpFB impactOccurred];   // 选中触觉（Myrtle 特征）
+        poc_picker_select(g_pickerApps[idx]);
     }
 }
 
@@ -2003,23 +2024,25 @@ static void poc_setup_edge_trigger(void) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
         }
-        // 面板内行高亮跟随手指 —— v0.4.21: 最近行判定；v0.4.25: 换算滚动偏移（内容 y = 手指屏幕 y - 行区顶 + offset）
-        if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerRows.count) {
+        // 网格跟手高亮 —— v0.4.26: 手指位置 → cell（内容坐标 = 屏幕 y - 网格顶 + scroll offset）
+        if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerGrid && g_pickerApps.count) {
             CGRect pf = g_pickerPanel.frame;
-            CGFloat off = g_pickerScroll ? g_pickerScroll.contentOffset.y : 0;
-            CGFloat rowTop = pf.origin.y + 54 - off;
-            CGFloat rowBot = rowTop + g_pickerRowH * g_pickerRows.count;
+            CGFloat off = g_pickerGrid.contentOffset.y;
+            CGFloat gx = p.x - pf.origin.x;
+            CGFloat gy = (p.y - (pf.origin.y + 54)) + off;
+            int col = (int)(gx / 55.0), row = (int)(gy / 90.0);
+            int totalRows = (int)((g_pickerApps.count + 3) / 4);
             NSInteger idx = -1;
-            if (p.y >= rowTop && p.y <= rowBot) {
-                CGFloat frac = (p.y - rowTop) / g_pickerRowH;
-                idx = (NSInteger)lround(frac);
-                if (idx < 0) idx = 0;
-                if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
+            if (gx >= 0 && gx <= 220 && gy >= 0 && row >= 0 && row < totalRows) {
+                NSInteger cand = (NSInteger)row * 4 + col;
+                if (cand >= 0 && cand < (NSInteger)g_pickerApps.count) idx = cand;
             }
-            for (NSUInteger i = 0; i < g_pickerRows.count; i++) {
-                UIView *row = g_pickerRows[i];
-                row.backgroundColor = (i == (NSUInteger)idx) ? [UIColor colorWithWhite:1.0 alpha:0.18]
-                                                             : [UIColor clearColor];
+            for (NSInteger i = 0; i < (NSInteger)g_pickerApps.count; i++) {
+                UICollectionViewCell *cell = [g_pickerGrid cellForItemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]];
+                if (!cell) continue;
+                BOOL hl = (i == idx);
+                cell.backgroundColor = hl ? [UIColor colorWithWhite:1.0 alpha:0.18] : [UIColor clearColor];
+                if (hl && g_pickerSelFB) [g_pickerSelFB selectionChanged];   // 触觉反馈（Myrtle 特征）
             }
         }
     }
@@ -2028,41 +2051,28 @@ static void poc_setup_edge_trigger(void) {
             CGPoint t = [g translationInView:g.view];
             if (t.x > 30) { poc_picker_hide(); return; }   // v0.4.22: 向右回滑 → 取消
             CGRect pf = g_pickerPanel.frame;
-            CGFloat off = g_pickerScroll ? g_pickerScroll.contentOffset.y : 0;
-            CGFloat rowTop = pf.origin.y + 54 - off;
-            CGFloat rowBot = rowTop + g_pickerRowH * g_pickerRows.count;
+            CGFloat off = g_pickerGrid ? g_pickerGrid.contentOffset.y : 0;
+            CGFloat gx = p.x - pf.origin.x;
+            CGFloat gy = (p.y - (pf.origin.y + 54)) + off;
+            int col = (int)(gx / 55.0), row = (int)(gy / 90.0);
+            int totalRows = (int)((g_pickerApps.count + 3) / 4);
             NSInteger idx = -1;
-            // v0.4.21: 手指在行区域（±10pt 容差）内 → 选最近行；否则未选中关闭
-            if (p.y >= rowTop - 10 && p.y <= rowBot + 10) {
-                CGFloat frac = (p.y - rowTop) / g_pickerRowH;
-                idx = (NSInteger)lround(frac);
-                if (idx < 0) idx = 0;
-                if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
+            if (gx >= -8 && gx <= 228 && gy >= -8 && row >= 0 && row < totalRows) {
+                NSInteger cand = (NSInteger)row * 4 + col;
+                if (cand >= 0 && cand < (NSInteger)g_pickerApps.count) idx = cand;
             }
             if (idx >= 0) {
-                NSArray *apps = poc_all_apps();   // v0.4.24: 列表含已安装应用
-                if (idx < (NSInteger)apps.count) {
-                    poc_picker_select(apps[idx]);   // 松手停在某 App 附近 → 浮窗打开（未运行则先启动）
-                } else {
-                    poc_picker_hide();
-                }
+                if (g_pickerImpFB) [g_pickerImpFB impactOccurred];
+                poc_picker_select(g_pickerApps[idx]);   // 松手停在某 App 图标 → 浮窗打开（未运行则先启动）
             } else {
                 poc_picker_hide();                           // 没停在任何 App → 自动关闭
             }
         }
     }
 }
-+ (void)poc_picker_row:(UIButton *)btn {
-    // v0.4.16: 点击应用行 → 选中该 scene 进浮窗（v0.4.24: 传整个 app dict，支持未运行启动）
-    NSArray *apps = poc_all_apps();
-    NSInteger idx = btn.tag - 1000;
-    if (idx >= 0 && idx < (NSInteger)apps.count) {
-        poc_picker_select(apps[idx]);
-    }
-}
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.25 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.26 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
