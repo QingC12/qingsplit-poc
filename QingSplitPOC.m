@@ -210,12 +210,16 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         }
     }
     if (!fallback) return nil;
-    // layer 提取（对齐探针已验证路径 v0.1.6 P3 段）：
+    // layer 提取（轨道 A，对齐探针已验证路径 v0.1.6 P3 段）：
     //   layerManager → layers（多 key 兜底，layers 可能是 NSSet）
-    id layer = nil; NSInteger layerCount = 0;
+    // 注意：前台 App 的 layer 可能被系统宿主链消费 → layerManager.layers 为空，
+    //       此时走轨道 B（系统容器反向取 contextID，见 poc_find_container_ctx）
+    id layer = nil; NSInteger layerCount = 0; NSString *lmCls = @"nil"; NSString *layersKind = @"nil";
     @try {
         id lm = poc_tryKVC(fallback, @[@"layerManager", @"_layerManager"]);
+        lmCls = poc_cls(lm);
         id layers = poc_tryKVC(lm, @[@"layers", @"_layers", @"sceneLayers"]);
+        layersKind = layers ? NSStringFromClass([layers class]) : @"nil";
         NSArray *layerArr = ([layers isKindOfClass:[NSSet class]]) ? [layers allObjects] : layers;
         if ([layerArr isKindOfClass:[NSArray class]]) {
             layerCount = layerArr.count;
@@ -231,7 +235,73 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
     } @catch (NSException *e) { }
     return @{ @"scene": fallback, @"sid": fallbackSid, @"layerCount": @(layerCount),
               @"layer": layer ?: (id)[NSNull null], @"ctx": @(ctx),
+              @"lmCls": lmCls, @"layersKind": layersKind,
               @"pid": @(pid) };
+}
+
+// ----------------------------------------------------------------------------
+// 轨道 B：从系统宿主容器反向取 contextID
+// 前台 App 的 layer 被 SBRootSceneWindow 内的 _UISceneLayerHostContainerView 消费，
+// 其 CA contextID 就是该 App 内容的渲染 context → 直接路径 3 直连
+// 返回容器类名或 nil
+// ----------------------------------------------------------------------------
+static NSInteger poc_find_container_ctx(NSString *targetSid, NSString **outContainerCls, NSInteger *outLayerCtx) {
+    NSInteger winCtx = 0;
+    if (outContainerCls) *outContainerCls = @"nil";
+    if (outLayerCtx) *outLayerCtx = 0;
+    @try {
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            NSMutableArray *containers = [NSMutableArray array];
+            __block void (^walk)(UIView *, int);
+            void (^walkBlock)(UIView *, int) = ^(UIView *v, int depth) {
+                if (!v || depth > 10) return;
+                if ([poc_cls(v) isEqualToString:@"_UISceneLayerHostContainerView"]) [containers addObject:v];
+                for (UIView *c in v.subviews) walk(c, depth + 1);
+            };
+            walk = walkBlock;
+            walk(w, 0);
+            for (UIView *container in containers) {
+                @try {
+                    id cscene = poc_tryKVC(container, @[@"_scene", @"scene"]);
+                    if (!cscene) continue;
+                    NSString *csid = poc_scene_id(cscene);
+                    if (![csid isEqualToString:targetSid]) continue;
+                    // 容器视图自身的 CA context（系统用它渲染该 app 内容）
+                    id ctxVal = poc_tryKVC(container.layer, @[@"contextId", @"_contextId", @"contextID", @"_contextID"]);
+                    NSInteger cctx = [ctxVal integerValue];
+                    // 容器可能持有 presentationContext，内含 sceneLayer 引用
+                    id pctx = poc_tryKVC(container, @[@"_presentationContext", @"presentationContext"]);
+                    id slayer = poc_tryKVC(pctx, @[@"sceneLayer", @"_sceneLayer", @"layer"]);
+                    NSInteger lctx = slayer ? [poc_tryKVC(slayer, @[@"_contextID", @"contextID"]) integerValue] : 0;
+                    poc_log(@"TRACKB_MATCH sid=%@ container=%@ winCtx=%ld layerCtx=%ld slayer=%@",
+                            csid, poc_cls(container), (long)cctx, (long)lctx, poc_cls(slayer));
+                    if (outContainerCls) *outContainerCls = poc_cls(container);
+                    if (outLayerCtx) *outLayerCtx = lctx;
+                    if (cctx > 0) winCtx = cctx;
+                } @catch (NSException *e) { }
+            }
+        }
+    } @catch (NSException *e) { }
+    return winCtx;
+}
+
+// 仅凭 contextID 渲染（路径 3：CALayer _setContentsContextID:）
+static UIView *poc_host_view_from_ctx(NSInteger ctx) {
+    if (ctx <= 0) return nil;
+    @try {
+        SEL sel = sel_registerName("_setContentsContextID:");
+        CALayer *ly = [CALayer layer];
+        ly.frame = CGRectMake(0, 0, 320, 480);
+        if (![ly respondsToSelector:sel]) return nil;
+        void (*fn)(id, SEL, unsigned int) = (void (*)(id, SEL, unsigned int))objc_msgSend;
+        fn(ly, sel, (unsigned int)ctx);
+        UIView *v = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 480)];
+        [v.layer addSublayer:ly];
+        return v;
+    } @catch (NSException *e) {
+        poc_log(@"CTX_HOST_EXC %@", e.name);
+        return nil;
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -360,13 +430,32 @@ static void poc_try_float(void) {
     NSInteger ctx = [target[@"ctx"] integerValue];
     NSInteger pid = [target[@"pid"] integerValue];
     NSInteger layerCount = [target[@"layerCount"] integerValue];
+    NSString *lmCls = target[@"lmCls"];
+    NSString *layersKind = target[@"layersKind"];
     NSString *layerType = layer ? poc_str(poc_tryKVC(layer, @[@"_type", @"type"])) : @"nil";
-    poc_log(@"TARGET sid=%@ pid=%ld layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
-            sid, (long)pid, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
+    poc_log(@"TARGET sid=%@ pid=%ld lm=%@ layersKind=%@ layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
+            sid, (long)pid, lmCls, layersKind, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
 
     // 2. 渲染 host view（Phase 0 核心风险点）
+    //    轨道 A：FBSceneLayer 对象（后台/浮窗托管 app）→ 路径 1/2/3
+    //    轨道 B：layerManager 为空（前台 app）→ 从系统宿主容器拿 contextID → 路径 3
     int path = 0;
-    UIView *hv = layer ? poc_make_host_view(layer, ctx, &path) : nil;
+    UIView *hv = nil;
+    if (layer) {
+        hv = poc_make_host_view(layer, ctx, &path);
+    }
+    if (!hv) {
+        NSString *containerCls = nil;
+        NSInteger layerCtx = 0;
+        NSInteger winCtx = poc_find_container_ctx(sid, &containerCls, &layerCtx);
+        if (layerCtx > 0) ctx = layerCtx;
+        else if (winCtx > 0) ctx = winCtx;
+        if (ctx > 0) {
+            poc_log(@"TRACKB_USED container=%@ ctx=%ld", containerCls ?: @"nil", (long)ctx);
+            hv = poc_host_view_from_ctx(ctx);
+            if (hv) path = 3;
+        }
+    }
     if (!hv) {
         poc_log(@"RENDER_FAIL all paths failed — POC ABORT (no write ops performed)");
         return;
