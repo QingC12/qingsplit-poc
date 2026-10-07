@@ -502,6 +502,7 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 //   - 手势仅在"边框区域"激活（起点在 contentView 外），不抢 app 内容交互
 static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化）
 static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义在下方全局区，供 QSFloatContainer 手势 ended 调用）
+static void poc_close_float(void);            // v0.3.16 前向声明（关闭浮窗：只移除窗口，不动 Scene）
 
 @interface QSFloatContainer : UIView
 @property (nonatomic, strong) UIView *contentView;
@@ -545,8 +546,35 @@ static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义�
         // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）；v0.3.15: 缩小到 20×20 跟随角落区
         [self addCornerKnob:CGRectMake(12, self.bounds.size.height - 32, 20, 20)];
         [self addCornerKnob:CGRectMake(self.bounds.size.width - 32, self.bounds.size.height - 32, 20, 20)];
+        // v0.3.16: 右上角关闭按钮（明确关闭机制，仅移除浮窗不动 Scene）
+        [self addCloseButton];
     }
     return self;
+}
+// v0.3.16: 关闭按钮 —— 右上角 44×44 热区 + 白圆 × 视觉。点击 → 只移除浮窗（不杀 Scene）
+- (void)addCloseButton {
+    CGFloat s = 44;
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+    b.frame = CGRectMake(self.bounds.size.width - s, 0, s, s);
+    b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+    UIView *dot = [[UIView alloc] initWithFrame:CGRectMake((s - 24) / 2.0, (s - 24) / 2.0, 24, 24)];
+    dot.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
+    dot.layer.cornerRadius = 12;
+    dot.userInteractionEnabled = NO;
+    UILabel *xl = [[UILabel alloc] initWithFrame:dot.bounds];
+    xl.text = @"×";
+    xl.textColor = [UIColor colorWithWhite:0.15 alpha:1.0];
+    xl.font = [UIFont boldSystemFontOfSize:17];
+    xl.textAlignment = NSTextAlignmentCenter;
+    xl.userInteractionEnabled = NO;
+    [dot addSubview:xl];
+    [b addSubview:dot];
+    [b addTarget:self action:@selector(onCloseTap:) forControlEvents:UIControlEventTouchUpInside];
+    [self addSubview:b];
+}
+- (void)onCloseTap:(id)sender {
+    poc_log(@"CLOSE_TAP");
+    poc_close_float();
 }
 - (void)addCornerKnob:(CGRect)f {
     UIView *k = [[UIView alloc] initWithFrame:f];
@@ -616,10 +644,33 @@ static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义�
 - (void)onPan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
         CGPoint t = [g translationInView:self.superview];
-        self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y);
+        CGPoint c = CGPointMake(self.center.x + t.x, self.center.y + t.y);
+        // v0.3.16: 拖动约束 —— 浮窗至少保留 60px 在屏幕内（左右/上下都不能完全拖出）
+        CGRect f = self.frame;
+        CGFloat minCx = 60 - f.size.width / 2.0;        // 左边至少 60 在屏内
+        CGFloat maxCx = 430 - 60 + f.size.width / 2.0;  // 右边至少 60 在屏内
+        CGFloat minCy = 60 - f.size.height / 2.0;       // 顶部至少 60 在屏内
+        CGFloat maxCy = 932 - 60 + f.size.height / 2.0; // 底部至少 60 在屏内
+        c.x = MAX(minCx, MIN(c.x, maxCx));
+        c.y = MAX(minCy, MIN(c.y, maxCy));
+        self.center = c;
         [g setTranslation:CGPointZero inView:self.superview];
     } else if (g.state == UIGestureRecognizerStateEnded) {
-        poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
+        // v0.3.16: 边缘吸附 —— 松手时距某边缘 < 40px 则吸到该边缘（不做半屏吸附，留给多浮窗阶段）
+        CGRect f = self.frame;
+        CGFloat nx = f.origin.x, ny = f.origin.y;
+        if (f.origin.x < 40) nx = 0;
+        else if ((430 - (f.origin.x + f.size.width)) < 40) nx = 430 - f.size.width;
+        if (f.origin.y < 40) ny = 0;
+        else if ((932 - (f.origin.y + f.size.height)) < 40) ny = 932 - f.size.height;
+        if (nx != f.origin.x || ny != f.origin.y) {
+            CGRect snapped = CGRectMake(nx, ny, f.size.width, f.size.height);
+            poc_log(@"SNAP_EDGE %@", NSStringFromCGRect(snapped));
+            [UIView animateWithDuration:0.2 animations:^{ self.frame = snapped; }];
+            poc_save_float_state(snapped);   // 保存吸附后的目标位置
+        } else {
+            poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
+        }
     }
 }
 // v0.3.8: 角落滑动缩放 —— v0.3.9 方向改为用户要求：
@@ -814,6 +865,30 @@ static void poc_screen_restore(void) {
         poc_log(@"SCREEN_SHOW_EXC %@", e.name);
     }
     g_sbContainer = nil;
+}
+
+// v0.3.16: 关闭浮窗 —— 只移除浮窗 UI（窗口/容器/host/红诊断），不释放/杀死目标 App Scene
+// WRITE RISK = LOW
+//   - 只改自己创建的 UIWindow/视图的 hidden/引用；不动 SB 状态、不动 FBScene、不动 layerManager
+//   - g_win 置 nil 后 poc_try_float 下一 tick 重新建窗 → "关闭后重新打开仍能 HOST_REFRESH"
+//   - 主屏回退恢复（露出桌面）；scene 的 layer 保持系统管理，原 app 仍在
+static void poc_close_float(void) {
+    @try {
+        poc_screen_restore();          // 1. 恢复主屏显示（若有隐藏）
+        if (g_win) {
+            g_win.rootViewController = nil;   // 解除 VC 引用，便于释放
+            g_win.hidden = YES;
+            g_win = nil;
+        }
+        g_container = nil;
+        g_hostView = nil;
+        g_diag = nil;
+        g_lastSid = nil;               // 允许重新选目标（app 重开 → 重新建窗）
+        g_lastCtx = 0;
+        poc_log(@"FLOAT_CLOSED — scene untouched, window removed, re-open will HOST_REFRESH");
+    } @catch (NSException *e) {
+        poc_log(@"FLOAT_CLOSE_EXC %@", e.name);
+    }
 }
 
 // v0.2.1: B 方案最小写 —— 空窗期调用 activateWithTransitionContext: 拉回 scene
