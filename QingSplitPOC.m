@@ -569,10 +569,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
         _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(onPinch:)];
         _scalePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onScalePan:)];
-        // v0.4.9: Stheno LongPressGesture(minimumDuration:maximumDistance:) 对应 —— 0.35s / 25pt
+        // v0.4.9: Stheno LongPressGesture(minimumDuration:maximumDistance:) 对应 —— v0.4.11: 0.3s / 30pt
         _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
-        _longPress.minimumPressDuration = 0.35;
-        _longPress.allowableMovement = 25;
+        _longPress.minimumPressDuration = 0.3;
+        _longPress.allowableMovement = 30;
         _pan.delegate = self;
         _pinch.delegate = self;
         _scalePan.delegate = self;
@@ -677,23 +677,38 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         return YES;
     }
     if (gr == _pan) {
-        // v0.3.12: 只有底部横条可拖动；v0.3.13: 40→56px；v0.3.15: 56→72px 更灵敏 + 角落排除区同步 44×44
-        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 72, self.bounds.size.width, 72);
-        if (!CGRectContainsPoint(bottomBar, p)) return NO;
+        // v0.4.11: 手势贴近悬浮窗 —— 热区从"仅底部条"扩展为：顶部 44 + 底部 72 + 左右边缘 16 全高
+        CGRect b = self.bounds;
+        CGRect topBar = CGRectMake(0, 0, b.size.width, 44);
+        CGRect bottomBar = CGRectMake(0, b.size.height - 72, b.size.width, 72);
+        CGRect leftEdge = CGRectMake(0, 0, 16, b.size.height);
+        CGRect rightEdge = CGRectMake(b.size.width - 16, 0, 16, b.size.height);
+        BOOL inZone = CGRectContainsPoint(topBar, p) || CGRectContainsPoint(bottomBar, p)
+                   || CGRectContainsPoint(leftEdge, p) || CGRectContainsPoint(rightEdge, p);
+        if (!inZone) return NO;
         // 角落区归 scalePan（避免竞争）—— 同步 44×44
-        CGRect bl = CGRectMake(0, self.bounds.size.height - 44, 44, 44);
-        CGRect br = CGRectMake(self.bounds.size.width - 44, self.bounds.size.height - 44, 44, 44);
+        CGRect bl = CGRectMake(0, b.size.height - 44, 44, 44);
+        CGRect br = CGRectMake(b.size.width - 44, b.size.height - 44, 44, 44);
         if (CGRectContainsPoint(bl, p) || CGRectContainsPoint(br, p)) return NO;
+        // v0.4.11: 右上角关闭按钮区归按钮（排除 pan 抢占点击）
+        CGRect closeZone = CGRectMake(b.size.width - 44, 0, 44, 44);
+        if (CGRectContainsPoint(closeZone, p)) return NO;
         return YES;
     }
     if (gr == _pinch) return NO;   // v0.3.12: 双指缩放已去除（只保留角落缩放）
     if (gr == _longPress) {
-        // v0.4.9: 长按整窗（内容区也可）—— 排除底部条（pan 更直接）与角落（scalePan）
-        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 72, self.bounds.size.width, 72);
-        if (CGRectContainsPoint(bottomBar, p)) return NO;
-        CGRect bl = CGRectMake(0, self.bounds.size.height - 44, 44, 44);
-        CGRect br = CGRectMake(self.bounds.size.width - 44, self.bounds.size.height - 44, 44, 44);
+        // v0.4.9: 长按整窗（内容区也可）—— 排除底部条/边缘（pan 更直接）与角落（scalePan）与关闭按钮
+        CGRect b = self.bounds;
+        CGRect bottomBar = CGRectMake(0, b.size.height - 72, b.size.width, 72);
+        CGRect leftEdge = CGRectMake(0, 0, 16, b.size.height);
+        CGRect rightEdge = CGRectMake(b.size.width - 16, 0, 16, b.size.height);
+        if (CGRectContainsPoint(bottomBar, p) || CGRectContainsPoint(leftEdge, p)
+         || CGRectContainsPoint(rightEdge, p)) return NO;
+        CGRect bl = CGRectMake(0, b.size.height - 44, 44, 44);
+        CGRect br = CGRectMake(b.size.width - 44, b.size.height - 44, 44, 44);
         if (CGRectContainsPoint(bl, p) || CGRectContainsPoint(br, p)) return NO;
+        CGRect closeZone = CGRectMake(b.size.width - 44, 0, 44, 44);
+        if (CGRectContainsPoint(closeZone, p)) return NO;
         return YES;
     }
     return YES;
@@ -707,6 +722,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         _lpActive = YES;
         _lpOrigin = self.center;
         _lpStart = [g locationInView:self.superview];
+        // v0.4.11: 日志确认长按触发（真机排查）
+        poc_log(@"LP_BEGIN at=%@", NSStringFromCGPoint(_lpStart));
         // 轻触觉反馈提示进入拖动模式（Stheno 手感）
         UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
         [fb impactOccurred];
@@ -1517,7 +1534,7 @@ static void poc_try_float(void) {
 @implementation POCBootstrap
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.1 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.11 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
