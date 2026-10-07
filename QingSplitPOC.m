@@ -542,9 +542,9 @@ static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义�
         [self addGestureRecognizer:_pan];
         [self addGestureRecognizer:_pinch];
         [self addGestureRecognizer:_scalePan];
-        // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）
-        [self addCornerKnob:CGRectMake(10, self.bounds.size.height - 34, 24, 24)];
-        [self addCornerKnob:CGRectMake(self.bounds.size.width - 34, self.bounds.size.height - 34, 24, 24)];
+        // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）；v0.3.15: 缩小到 20×20 跟随角落区
+        [self addCornerKnob:CGRectMake(12, self.bounds.size.height - 32, 20, 20)];
+        [self addCornerKnob:CGRectMake(self.bounds.size.width - 32, self.bounds.size.height - 32, 20, 20)];
     }
     return self;
 }
@@ -594,18 +594,19 @@ static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义�
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
     CGPoint p = [gr locationInView:self];
     if (gr == _scalePan) {
-        CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
-        CGRect br = CGRectMake(self.bounds.size.width - 60, self.bounds.size.height - 60, 60, 60);
+        // v0.3.15: 角落缩放区 60×60 → 44×44（用户实测角落过于灵敏，缩小）
+        CGRect bl = CGRectMake(0, self.bounds.size.height - 44, 44, 44);
+        CGRect br = CGRectMake(self.bounds.size.width - 44, self.bounds.size.height - 44, 44, 44);
         if (!CGRectContainsPoint(bl, p) && !CGRectContainsPoint(br, p)) return NO;
         return YES;
     }
     if (gr == _pan) {
-        // v0.3.12: 只有底部横条可拖动；v0.3.13: 加高 40→56px（用户实测 40px 不灵敏，底部滑动带不动）
-        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 56, self.bounds.size.width, 56);
+        // v0.3.12: 只有底部横条可拖动；v0.3.13: 40→56px；v0.3.15: 56→72px 更灵敏 + 角落排除区同步 44×44
+        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 72, self.bounds.size.width, 72);
         if (!CGRectContainsPoint(bottomBar, p)) return NO;
-        // 角落区归 scalePan（避免竞争）
-        CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
-        CGRect br = CGRectMake(self.bounds.size.width - 60, self.bounds.size.height - 60, 60, 60);
+        // 角落区归 scalePan（避免竞争）—— 同步 44×44
+        CGRect bl = CGRectMake(0, self.bounds.size.height - 44, 44, 44);
+        CGRect br = CGRectMake(self.bounds.size.width - 44, self.bounds.size.height - 44, 44, 44);
         if (CGRectContainsPoint(bl, p) || CGRectContainsPoint(br, p)) return NO;
         return YES;
     }
@@ -1221,7 +1222,8 @@ static void poc_try_float(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
-        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *tm) {
+        // v0.3.15: KEEP tick 3s → 1s —— 主屏回退响应提速（app 重新打开后 ≤1s 隐藏全屏，缓解双 host 白屏闪烁）
+        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm) {
             poc_try_float();
             // v0.1.8: 窗口建立后不 invalidate —— 每 3s 进入保持模式（contextID 漂移检测）
         }];
