@@ -235,7 +235,13 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         for (id l in allLayers) {
             NSString *t = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
             NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
-            poc_log(@"LAYER_SCAN type=%@ ctx=%ld cls=%@", t, (long)c, poc_cls(l));
+            // v0.3.3: 记录 scene layer 原始 frame（native 尺寸，host 内容按此渲染）
+            CGRect lf = CGRectZero;
+            @try {
+                id fv = [l valueForKey:@"frame"];
+                if (fv && [fv respondsToSelector:@selector(CGRectValue)]) lf = [fv CGRectValue];
+            } @catch (NSException *e) { }
+            poc_log(@"LAYER_SCAN type=%@ ctx=%ld cls=%@ frame=%@", t, (long)c, poc_cls(l), NSStringFromCGRect(lf));
             if (!layer && [t isEqualToString:@"0"]) layer = l;
         }
         if (!layer && allLayers.count) layer = allLayers.firstObject;
@@ -459,6 +465,8 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 
 @interface QSFloatContainer : UIView
 @property (nonatomic, strong) UIView *contentView;
+// v0.3.3: hosted scene layer 的原始尺寸（native）——_UIContextLayerHostView 内容按此渲染，不随 frame 拉伸
+@property (nonatomic, assign) CGSize nativeContentSize;
 @end
 @implementation QSFloatContainer {
     UIPanGestureRecognizer *_pan;
@@ -494,8 +502,25 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    UIView *cv = self.contentView;
+    if (!cv) return;
     // 内容区内边距 14（边框拖动区，v0.3.1 加宽便于操作）
-    self.contentView.frame = CGRectInset(self.bounds, 14, 14);
+    CGRect inner = CGRectInset(self.bounds, 14, 14);
+    CGSize native = self.nativeContentSize;
+    if (native.width > 0 && native.height > 0) {
+        // v0.3.3: contain 等比 —— host 保持 native bounds，transform 缩放到内容区（内容不拉伸变形，跟随缩放）
+        CGFloat sx = inner.size.width / native.width;
+        CGFloat sy = inner.size.height / native.height;
+        CGFloat s = MIN(sx, sy);
+        if (s > 0) {
+            cv.bounds = CGRectMake(0, 0, native.width, native.height);
+            cv.center = CGPointMake(CGRectGetMidX(inner), CGRectGetMidY(inner));
+            cv.transform = CGAffineTransformMakeScale(s, s);
+        }
+    } else {
+        cv.frame = inner;
+        cv.transform = CGAffineTransformIdentity;
+    }
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = [super hitTest:point withEvent:event];
@@ -503,10 +528,12 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
     return h;                     // 内容 → app
 }
 // v0.3.1: Pan 限边框起点；Pinch 始终允许（双指中点常落内容区，原判定会误拒）
+// v0.3.3: 判定直接用 inset 内容区（transform 下 contentView.frame 不再等于 inset 区域）
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
     if (gr == _pan) {
         CGPoint p = [gr locationInView:self];
-        if (self.contentView && CGRectContainsPoint(self.contentView.frame, p)) return NO;
+        CGRect inner = CGRectInset(self.bounds, 14, 14);
+        if (CGRectContainsPoint(inner, p)) return NO;
     }
     return YES;
 }
@@ -654,7 +681,13 @@ static void poc_keep_float(void) {
                 // v0.3.0: 新 host 放回容器内容区（保持容器位置/大小不变）
                 if (g_container) {
                     QSFloatContainer *c = (QSFloatContainer *)g_container;
-                    nhv.frame = c.contentView.frame;
+                    // v0.3.3: 同步 native 尺寸（scene layer 可能随重建变化）
+                    CGRect lf = CGRectZero;
+                    @try {
+                        id fv = [newLayer valueForKey:@"frame"];
+                        if (fv && [fv respondsToSelector:@selector(CGRectValue)]) lf = [fv CGRectValue];
+                    } @catch (NSException *e) { }
+                    if (lf.size.width > 0 && lf.size.height > 0) c.nativeContentSize = lf.size;
                     [c.contentView removeFromSuperview];
                     c.contentView = nhv;
                     [c setNeedsLayout];
@@ -774,18 +807,28 @@ static void poc_try_float(void) {
         [vc.view addSubview:diag];
         g_diag = diag;
         // 3.1 v0.3.0: 浮窗容器（边框拖动/缩放）+ host view 作为内容
+        // v0.3.3: 记录 scene layer 原始尺寸 → 容器 contain 等比缩放（内容不拉伸变形）
+        CGSize native = CGSizeZero;
+        @try {
+            if (layer) {
+                id fv = [layer valueForKey:@"frame"];
+                if (fv && [fv respondsToSelector:@selector(CGRectValue)]) native = [fv CGRectValue].size;
+            }
+        } @catch (NSException *e) { }
         QSFloatContainer *container = [[QSFloatContainer alloc]
             initWithFrame:CGRectMake((g_win.bounds.size.width - 340) / 2.0,
                                      (g_win.bounds.size.height - 500) / 2.0,
                                      340, 500)];
-        container.contentView = hv;   // layoutSubviews 会安排 10px 内边距
+        container.nativeContentSize = native;
+        container.contentView = hv;   // layoutSubviews 安排 14px 内边距 + contain 等比
         [vc.view addSubview:container];
         [container layoutIfNeeded];
         g_container = container;
         g_hostView = hv;
-        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=RED_DIAG",
+        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=RED_DIAG native=%@",
                 poc_cls(g_win), g_win.windowLevel,
-                NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene);
+                NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
+                NSStringFromCGSize(native));
     } @catch (NSException *e) {
         poc_log(@"WINDOW_EXC %@ — abort", e.name);
         return;
