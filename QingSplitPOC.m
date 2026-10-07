@@ -526,7 +526,8 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
-        self.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.75];
+        // v0.3.11: 去除手势区灰色背景（用户要求）——容器背景透明，只留白色边框线 + 角落把手
+        self.backgroundColor = [UIColor clearColor];
         self.layer.cornerRadius = 12;
         self.layer.borderWidth = 2;
         self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
