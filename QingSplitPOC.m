@@ -2064,14 +2064,15 @@ static void poc_setup_edge_trigger(void) {
                 if (g_pickerImpFB) [g_pickerImpFB impactOccurred];
                 poc_picker_select(g_pickerApps[idx]);   // 松手停在某 App 图标 → 浮窗打开（未运行则先启动）
             } else {
-                poc_picker_hide();                           // 没停在任何 App → 自动关闭
+                // v0.4.27: 松手空白不关闭 —— 选择器保持打开，方便继续浏览/点选；仅右滑回红线区关闭
+                poc_log(@"PICKER_KEEP_OPEN y=%.0f", p.y);
             }
         }
     }
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.26 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.27 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
