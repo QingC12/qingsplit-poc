@@ -187,8 +187,10 @@ static NSString *poc_scene_id(id scene) {
 
 static BOOL poc_is_target_scene(NSString *sid, NSString *wanted) {
     if ([sid isEqualToString:@"nil"]) return NO;
-    if ([sid hasPrefix:@"com.apple."]) return NO;
-    if ([sid hasPrefix:@"springboard"] || [sid hasPrefix:@"SystemAperture"]) return NO;
+    // v0.1.1: FBScene identifier 格式为 "sceneID:<bundle-id>-default"（app scene 判据）
+    // 系统 scene（springboard/SystemAperture/SuperHighLevelSystemAperture/UUID）无 sceneID: 前缀
+    if (![sid hasPrefix:@"sceneID:"]) return NO;
+    if ([sid containsString:@"com.apple."]) return NO;
     if ([sid containsString:@"Stheno"] || [sid containsString:@"QingSplit"]) return NO;
     if (wanted.length && ![sid hasPrefix:wanted]) return NO;
     return YES;
@@ -208,11 +210,17 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         }
     }
     if (!fallback) return nil;
-    id layer = nil;
+    // layer 提取（对齐探针已验证路径 v0.1.6 P3 段）：
+    //   layerManager → layers（多 key 兜底，layers 可能是 NSSet）
+    id layer = nil; NSInteger layerCount = 0;
     @try {
-        id lm = [fallback valueForKey:@"layerManager"];
-        NSArray *layers = [lm valueForKey:@"layers"];
-        if ([layers isKindOfClass:[NSArray class]] && layers.count) layer = layers.firstObject;
+        id lm = poc_tryKVC(fallback, @[@"layerManager", @"_layerManager"]);
+        id layers = poc_tryKVC(lm, @[@"layers", @"_layers", @"sceneLayers"]);
+        NSArray *layerArr = ([layers isKindOfClass:[NSSet class]]) ? [layers allObjects] : layers;
+        if ([layerArr isKindOfClass:[NSArray class]]) {
+            layerCount = layerArr.count;
+            if (layerArr.count) layer = layerArr.firstObject;
+        }
     } @catch (NSException *e) { }
     NSInteger ctx = 0;
     if (layer) ctx = [poc_tryKVC(layer, @[@"_contextID", @"contextID"]) integerValue];
@@ -221,7 +229,7 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         proc = [fallback valueForKey:@"clientProcess"];
         pid = [proc valueForKey:@"pid"] ? [[proc valueForKey:@"pid"] integerValue] : 0;
     } @catch (NSException *e) { }
-    return @{ @"scene": fallback, @"sid": fallbackSid,
+    return @{ @"scene": fallback, @"sid": fallbackSid, @"layerCount": @(layerCount),
               @"layer": layer ?: (id)[NSNull null], @"ctx": @(ctx),
               @"pid": @(pid) };
 }
@@ -351,8 +359,10 @@ static void poc_try_float(void) {
     id layer = [target[@"layer"] isKindOfClass:[NSNull class]] ? nil : target[@"layer"];
     NSInteger ctx = [target[@"ctx"] integerValue];
     NSInteger pid = [target[@"pid"] integerValue];
-    poc_log(@"TARGET sid=%@ pid=%ld layer=%@ ctx=%ld",
-            sid, (long)pid, poc_cls(layer), (long)ctx);
+    NSInteger layerCount = [target[@"layerCount"] integerValue];
+    NSString *layerType = layer ? poc_str(poc_tryKVC(layer, @[@"_type", @"type"])) : @"nil";
+    poc_log(@"TARGET sid=%@ pid=%ld layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
+            sid, (long)pid, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
 
     // 2. 渲染 host view（Phase 0 核心风险点）
     int path = 0;
