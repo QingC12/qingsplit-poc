@@ -451,6 +451,74 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 }
 @end
 
+// v0.3.0: 浮窗容器 —— 边框拖动/缩放手势，内容区触摸仍路由给被 host 的 app
+//   - Pan: 拖动容器（窗口内移动）
+//   - Pinch: 缩放容器（含内容）
+//   - 手势仅在"边框区域"激活（起点在 contentView 外），不抢 app 内容交互
+static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化）
+
+@interface QSFloatContainer : UIView
+@property (nonatomic, strong) UIView *contentView;
+@end
+@implementation QSFloatContainer {
+    UIPanGestureRecognizer *_pan;
+    UIPinchGestureRecognizer *_pinch;
+}
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = [UIColor colorWithWhite:0.15 alpha:0.75];
+        self.layer.cornerRadius = 12;
+        self.layer.borderWidth = 2;
+        self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
+        self.clipsToBounds = YES;
+        _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
+        _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(onPinch:)];
+        _pan.delegate = self;
+        _pinch.delegate = self;
+        [self addGestureRecognizer:_pan];
+        [self addGestureRecognizer:_pinch];
+    }
+    return self;
+}
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    // 内容区内边距 10（边框拖动区）
+    self.contentView.frame = CGRectInset(self.bounds, 10, 10);
+}
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = [super hitTest:point withEvent:event];
+    if (h == self) return self;   // 边框 → 容器（手势）
+    return h;                     // 内容 → app
+}
+// 手势仅起点在内容区外时激活（内容区触摸全部交给 app）
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
+    if (gr == _pan || gr == _pinch) {
+        CGPoint p = [gr locationInView:self];
+        if (self.contentView && CGRectContainsPoint(self.contentView.frame, p)) return NO;
+    }
+    return YES;
+}
+- (void)onPan:(UIPanGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateChanged) {
+        CGPoint t = [g translationInView:self.superview];
+        self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y);
+        [g setTranslation:CGPointZero inView:self.superview];
+    }
+}
+- (void)onPinch:(UIPinchGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateChanged) {
+        CGFloat s = g.scale;
+        CGFloat newW = self.bounds.size.width * s;
+        CGFloat newH = self.bounds.size.height * s;
+        newW = MIN(MAX(newW, 180), 500);
+        newH = MIN(MAX(newH, 260), 1000);
+        self.bounds = CGRectMake(0, 0, newW, newH);
+        g.scale = 1.0;
+    }
+}
+@end
+
 static UIWindow *g_win = nil;
 static UIView *g_hostView = nil;
 static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，20s 后移除）
@@ -567,10 +635,19 @@ static void poc_keep_float(void) {
             int path = 0;
             UIView *nhv = poc_make_host_view(newLayer, newCtx, &path);
             if (nhv) {
-                nhv.frame = g_hostView.frame;
-                UIView *sup = g_hostView.superview;
-                if (sup) [sup insertSubview:nhv aboveSubview:g_hostView];
-                [g_hostView removeFromSuperview];
+                // v0.3.0: 新 host 放回容器内容区（保持容器位置/大小不变）
+                if (g_container) {
+                    QSFloatContainer *c = (QSFloatContainer *)g_container;
+                    nhv.frame = c.contentView.frame;
+                    [c.contentView removeFromSuperview];
+                    c.contentView = nhv;
+                    [c setNeedsLayout];
+                } else {
+                    nhv.frame = g_hostView.frame;
+                    UIView *sup = g_hostView.superview;
+                    if (sup) [sup insertSubview:nhv aboveSubview:g_hostView];
+                    [g_hostView removeFromSuperview];
+                }
                 g_hostView = nhv;
                 g_lastCtx = newCtx;
                 poc_log(@"HOST_REFRESH_OK path=%d", path);
@@ -670,7 +747,7 @@ static void poc_try_float(void) {
                 winScene = poc_scene_id(use);
             }
         } @catch (NSException *e) { }
-        // v0.1.4 可见性诊断 → v0.1.7 独立红色视图（背景 clear，红色全靠 g_diag，60s 后 removeFromSuperview）
+        // v0.1.4 可见性诊断 → v0.1.7 独立红色视图（背景 clear，红色全靠 g_diag，20s 后移除）
         POCController *vc = [[POCController alloc] init];
         vc.view.backgroundColor = [UIColor clearColor];
         g_win.rootViewController = vc;
@@ -680,16 +757,19 @@ static void poc_try_float(void) {
         diag.userInteractionEnabled = NO;   // 不拦截触摸
         [vc.view addSubview:diag];
         g_diag = diag;
-        // 3.1 host view 放窗口中央（固定 320×480，第一版无手势）
-        // 加到 rootVC.view（在 diag 之后 → diag 上层，红色下浮窗内容可见）
-        hv.frame = CGRectMake((g_win.bounds.size.width - 320) / 2.0,
-                              (g_win.bounds.size.height - 480) / 2.0,
-                              320, 480);
-        [vc.view addSubview:hv];
+        // 3.1 v0.3.0: 浮窗容器（边框拖动/缩放）+ host view 作为内容
+        QSFloatContainer *container = [[QSFloatContainer alloc]
+            initWithFrame:CGRectMake((g_win.bounds.size.width - 340) / 2.0,
+                                     (g_win.bounds.size.height - 500) / 2.0,
+                                     340, 500)];
+        container.contentView = hv;   // layoutSubviews 会安排 10px 内边距
+        [vc.view addSubview:container];
+        [container layoutIfNeeded];
+        g_container = container;
         g_hostView = hv;
-        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ host=%@ scene=%@ bg=RED_DIAG",
+        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=RED_DIAG",
                 poc_cls(g_win), g_win.windowLevel,
-                NSStringFromCGRect(g_win.frame), poc_cls(hv), winScene);
+                NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene);
     } @catch (NSException *e) {
         poc_log(@"WINDOW_EXC %@ — abort", e.name);
         return;
