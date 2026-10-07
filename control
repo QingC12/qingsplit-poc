@@ -1,6 +1,6 @@
 Package: com.qingsplit.poc
 Name: QingSplitPOC
-Version: 0.4.21
+Version: 0.4.22
 Architecture: iphoneos-arm64e
 Description: First Floating Window POC for QingSplit (host one real App scene in own UIWindow, minimal writes)
 Maintainer: QingSplit Team

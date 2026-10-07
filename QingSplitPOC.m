@@ -1014,6 +1014,7 @@ static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 
 static UIWindow *g_triggerWin = nil;
 static UIView *g_pickerPanel = nil;      // v0.4.16: 应用选择器面板（右侧滑入）
 static NSArray *g_pickerRows = nil;      // v0.4.19: 选择器行视图（跟手高亮）
+static CGFloat g_pickerRowH = 50;       // v0.4.22: 自适应行高（铺满触发条 150pt）
 static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene id（前缀匹配）
 static BOOL g_triggerArmed = NO;
 
@@ -1710,24 +1711,17 @@ static void poc_picker_show(void) {
             g_triggerWin.rootViewController = vc;
             g_pickerVC = vc;
         }
-        // 面板：右侧 280 宽，垂直居中，白色圆角（左侧圆角 20）
+        // 面板 —— v0.4.22: 宽度 220，高度/位置自适应：行高铺满触发条(150pt)，行区对齐触发条 y=391
         UIView *panel = g_pickerPanel;
-        if (!panel) {
-            panel = [[UIView alloc] initWithFrame:CGRectMake(430, 90, 280, 752)];
-            panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
-            panel.layer.cornerRadius = 20;
-            panel.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
-            panel.clipsToBounds = YES;
-            g_pickerPanel = panel;
-            [g_pickerVC.view addSubview:panel];
-        }
-        [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
-        // 应用列表（运行中）—— v0.4.21: 面板高度自适应 + y 对齐触发条（行区域与手指位置重叠，避免松手永远判定未选中）
         NSArray *apps = poc_running_apps();
-        CGFloat pH = 54 + 50.0 * apps.count + 20;
-        CGFloat panelY = MIN(391, 932 - pH - 20);   // 尽量贴触发条 y=391，行多时上移防超屏
+        NSUInteger n = apps.count ? apps.count : 1;
+        CGFloat rowH = (n <= 3) ? (150.0 / n) : 50.0;         // 行高：1 行=150 铺满红线，2=75，3=50，多则 50
+        if (rowH < 44) rowH = 44;
+        g_pickerRowH = rowH;
+        CGFloat pH = 54 + rowH * n + 20;
+        CGFloat panelY = MIN(337, 932 - pH - 20);             // 行区起点=panelY+54=391 → 与触发条顶对齐
         if (!panel) {
-            panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, 280, pH)];
+            panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, 220, pH)];
             panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
             panel.layer.cornerRadius = 20;
             panel.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
@@ -1735,41 +1729,49 @@ static void poc_picker_show(void) {
             g_pickerPanel = panel;
             [g_pickerVC.view addSubview:panel];
         }
-        panel.frame = CGRectMake(142, panelY, 280, pH);   // 重建布局直接落位（动画在下方统一）
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         // 标题
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, 250, 30)];
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 12, 190, 30)];
         title.text = @"选择要悬浮的应用";
         title.textColor = [UIColor whiteColor];
-        title.font = [UIFont boldSystemFontOfSize:17];
+        title.font = [UIFont boldSystemFontOfSize:15];
         [panel addSubview:title];
-        // 应用行（v0.4.21: 面板高度自适应，行从面板内 y=54 起 50/行）
+        // 应用行 —— v0.4.22: 行高自适应(铺满触发条) + 应用图标(LSApplicationProxy→UIImage 私有，失败仅文本)
         CGFloat y = 54;
         NSMutableArray *rows = [NSMutableArray array];
+        NSUInteger iconsShown = 0;
         for (NSDictionary *a in apps) {
-            CGFloat rowH = 50;
-            UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 280, rowH)];
+            UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 220, rowH)];
             row.tag = 0;
             row.backgroundColor = [UIColor clearColor];   // v0.4.19: 默认透明，跟手高亮时改色
-            // bundle 文本（图标私有 API 尝试，失败仅文本）
+            // 图标：1) LSApplicationProxy iconDataForVariant: 2) UIImage 私有 3) 仅文本
             UIImage *icon = nil;
             @try {
-                SEL s = sel_registerName("_applicationIconImageForBundleIdentifier:");
-                if ([[UIImage class] respondsToSelector:s]) {
-                    id (*fn)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
-                    icon = fn([UIImage class], s, a[@"bundle"]);
+                id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
+                if (proxy) {
+                    NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
+                    if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
                 }
-            } @catch (NSException *e) { }
-            UIView *txtWrap = [[UIView alloc] initWithFrame:CGRectMake(16, 0, 250, rowH)];
+            } @catch (NSException *e) { icon = nil; }
+            if (!icon) {
+                @try {
+                    SEL s = sel_registerName("_applicationIconImageForBundleIdentifier:");
+                    if ([[UIImage class] respondsToSelector:s]) {
+                        id (*fn)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
+                        icon = fn([UIImage class], s, a[@"bundle"]);
+                    }
+                } @catch (NSException *e) { }
+            }
+            if (icon) iconsShown++;
+            UIView *txtWrap = [[UIView alloc] initWithFrame:CGRectMake(12, 0, 196, rowH)];
             if (icon) {
                 UIImageView *iv = [[UIImageView alloc] initWithImage:icon];
-                iv.frame = CGRectMake(0, (rowH - 30) / 2.0, 30, 30);
-                iv.layer.cornerRadius = 6;
+                iv.frame = CGRectMake(0, (rowH - 36) / 2.0, 36, 36);
+                iv.layer.cornerRadius = 7;
                 iv.clipsToBounds = YES;
                 [txtWrap addSubview:iv];
-                txtWrap.frame = CGRectMake(16, 0, 250, rowH);
             }
-            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(icon ? 40 : 0, (rowH - 20) / 2.0, 220, 20)];
+            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(icon ? 46 : 0, (rowH - 18) / 2.0, 150, 18)];
             lbl.text = a[@"bundle"];
             lbl.textColor = [UIColor whiteColor];
             lbl.font = [UIFont systemFontOfSize:14];
@@ -1788,13 +1790,13 @@ static void poc_picker_show(void) {
             y += rowH;
         }
         g_pickerRows = rows;   // v0.4.19: 供跟手高亮
-        // v0.4.21: 滑入动画（从右缘 430 滑到面板位）
-        panel.frame = CGRectMake(430, panelY, 280, pH);
+        // 滑入动画（从右缘滑到面板位 202=430-220-8）
+        panel.frame = CGRectMake(430, panelY, 220, pH);
         panel.hidden = NO;
         [UIView animateWithDuration:0.25 animations:^{
-            panel.frame = CGRectMake(142, panelY, 280, pH);
+            panel.frame = CGRectMake(202, panelY, 220, pH);
         }];
-        poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f", (long)apps.count, panelY);
+        poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f rowH=%.0f icons=%lu", (long)apps.count, panelY, rowH, (unsigned long)iconsShown);
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
     }
@@ -1821,8 +1823,8 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.20: 右缘触发条（28px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 28, 391, 28, 150)];
+        // v0.4.20: 右缘触发条（20px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 20, 391, 20, 150)];
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
         strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
@@ -1853,14 +1855,14 @@ static void poc_setup_edge_trigger(void) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
         }
-        // 面板内行高亮跟随手指 —— v0.4.21: 最近行判定（手指 y 不必精确落在行内，高亮最近行作视觉反馈）
+        // 面板内行高亮跟随手指 —— v0.4.21: 最近行判定（手指 y 不必精确落在行内，高亮最近行作视觉反馈）；v0.4.22: 行高用 g_pickerRowH
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerRows.count) {
             CGRect pf = g_pickerPanel.frame;
             CGFloat rowTop = pf.origin.y + 54;
-            CGFloat rowBot = rowTop + 50.0 * g_pickerRows.count;
+            CGFloat rowBot = rowTop + g_pickerRowH * g_pickerRows.count;
             NSInteger idx = -1;
             if (p.y >= rowTop && p.y <= rowBot) {
-                CGFloat frac = (p.y - rowTop) / 50.0;
+                CGFloat frac = (p.y - rowTop) / g_pickerRowH;
                 idx = (NSInteger)lround(frac);
                 if (idx < 0) idx = 0;
                 if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
@@ -1874,13 +1876,15 @@ static void poc_setup_edge_trigger(void) {
     }
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         if (g_pickerPanel && !g_pickerPanel.hidden) {
+            CGPoint t = [g translationInView:g.view];
+            if (t.x > 30) { poc_picker_hide(); return; }   // v0.4.22: 向右回滑 → 取消
             CGRect pf = g_pickerPanel.frame;
             CGFloat rowTop = pf.origin.y + 54;
-            CGFloat rowBot = rowTop + 50.0 * g_pickerRows.count;
+            CGFloat rowBot = rowTop + g_pickerRowH * g_pickerRows.count;
             NSInteger idx = -1;
             // v0.4.21: 手指在行区域（±10pt 容差）内 → 选最近行；否则未选中关闭
             if (p.y >= rowTop - 10 && p.y <= rowBot + 10) {
-                CGFloat frac = (p.y - rowTop) / 50.0;
+                CGFloat frac = (p.y - rowTop) / g_pickerRowH;
                 idx = (NSInteger)lround(frac);
                 if (idx < 0) idx = 0;
                 if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
@@ -1908,7 +1912,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.21 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.22 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
