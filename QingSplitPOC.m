@@ -685,11 +685,29 @@ static void poc_keep_float(void) {
             else if ([layers isKindOfClass:[NSSet class]]) arr = [layers allObjects];
             else if ([layers isKindOfClass:[NSOrderedSet class]]) arr = [layers array];
             else if ([layers respondsToSelector:@selector(allObjects)]) arr = [layers allObjects];
+            // v0.3.7: 收集所有 type=0 layer（页面切换时新增 layer 才是当前显示层）
+            NSMutableArray *type0s = [NSMutableArray array];
             for (id l in arr) {
                 NSString *t = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
                 NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
-                if (!newLayer && [t isEqualToString:@"0"]) { newLayer = l; newCtx = c; }
+                if ([t isEqualToString:@"0"]) [type0s addObject:@{@"layer": l, @"ctx": @(c)}];
             }
+            // v0.3.7: lc 变化 = 页面切换事件 → 优先切到"新 type=0 layer"（ctx != 当前 host ctx）
+            // 酷安实锤：二级页面 lc 1→2，新页面内容在新 layer，旧 layer context 白屏
+            static NSInteger g_lastLc = -1;
+            if (g_lastLc >= 0 && (NSInteger)arr.count != g_lastLc && type0s.count) {
+                NSInteger switchCtx = 0; id switchLayer = nil;
+                for (NSDictionary *d in type0s) {
+                    NSInteger c = [d[@"ctx"] integerValue];
+                    if (c != g_lastCtx) { switchLayer = d[@"layer"]; switchCtx = c; break; }
+                }
+                if (switchLayer) {
+                    newLayer = switchLayer; newCtx = switchCtx;
+                    poc_log(@"LAYER_SWITCH lc=%ld→%ld ctx=%ld→%ld", (long)g_lastLc, (long)arr.count, (long)g_lastCtx, (long)newCtx);
+                }
+            }
+            g_lastLc = arr.count;
+            if (!newLayer && type0s.count) { newLayer = type0s[0][@"layer"]; newCtx = [type0s[0][@"ctx"] integerValue]; }
             if (!newLayer && arr.count) { newLayer = arr.firstObject; newCtx = [poc_tryKVC(newLayer, @[@"_contextID", @"contextID"]) integerValue]; }
             break;
         }
@@ -723,6 +741,27 @@ static void poc_keep_float(void) {
                 }
             }
             if (kn.width <= 0) { kn = [[UIScreen mainScreen] bounds].size; ksrc = @"screen"; }
+            // v0.3.7: lc 变化时打全 layer 明细（type/ctx），追踪页面切换
+            static NSInteger g_diagLc = -1;
+            if (g_diagLc != lc) {
+                g_diagLc = lc;
+                @try {
+                    id lm3 = poc_tryKVC(targetScene, @[@"layerManager", @"_layerManager"]);
+                    id layers3 = poc_tryKVC(lm3, @[@"layers", @"_layers", @"sceneLayers"]);
+                    NSArray *arr3 = nil;
+                    if ([layers3 isKindOfClass:[NSArray class]]) arr3 = layers3;
+                    else if ([layers3 isKindOfClass:[NSSet class]]) arr3 = [layers3 allObjects];
+                    else if ([layers3 isKindOfClass:[NSOrderedSet class]]) arr3 = [layers3 array];
+                    else if ([layers3 respondsToSelector:@selector(allObjects)]) arr3 = [layers3 allObjects];
+                    NSMutableString *ms = [NSMutableString string];
+                    for (id l in arr3) {
+                        NSString *t3 = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
+                        NSInteger c3 = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
+                        [ms appendFormat:@" t%@=ctx%ld", t3, (long)c3];
+                    }
+                    poc_log(@"KEEP_L lc=%ld%@", (long)lc, ms);
+                } @catch (NSException *e) { }
+            }
         } @catch (NSException *e) { }
         poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld lc=%ld native=%@ src=%@", winAlive, hostAlive,
                 actStr, (long)newCtx, (long)g_lastCtx, (long)lc, NSStringFromCGSize(kn), ksrc);
