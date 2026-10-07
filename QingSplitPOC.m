@@ -220,10 +220,21 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         lmCls = poc_cls(lm);
         id layers = poc_tryKVC(lm, @[@"layers", @"_layers", @"sceneLayers"]);
         layersKind = layers ? NSStringFromClass([layers class]) : @"nil";
-        NSArray *layerArr = ([layers isKindOfClass:[NSSet class]]) ? [layers allObjects] : layers;
-        if ([layerArr isKindOfClass:[NSArray class]]) {
+        // v0.1.3: layers 实际是 __NSFrozenOrderedSetM (NSOrderedSet)，不是 NSArray/NSSet！
+        // 必须同时支持 NSArray / NSSet / NSOrderedSet
+        NSArray *layerArr = nil;
+        if ([layers isKindOfClass:[NSArray class]]) {
+            layerArr = layers;
+        } else if ([layers isKindOfClass:[NSSet class]]) {
+            layerArr = [layers allObjects];
+        } else if ([layers isKindOfClass:[NSOrderedSet class]]) {
+            layerArr = [layers array];
+        } else if ([layers respondsToSelector:@selector(allObjects)]) {
+            layerArr = [layers allObjects];
+        }
+        if (layerArr.count) {
             layerCount = layerArr.count;
-            if (layerArr.count) layer = layerArr.firstObject;
+            layer = layerArr.firstObject;
         }
     } @catch (NSException *e) { }
     NSInteger ctx = 0;
@@ -250,7 +261,20 @@ static NSInteger poc_find_container_ctx(NSString *targetSid, NSString **outConta
     if (outContainerCls) *outContainerCls = @"nil";
     if (outLayerCtx) *outLayerCtx = 0;
     @try {
+        // 窗口双源收集（对齐探针）：UIApplication.windows + connectedScenes.windows
+        NSMutableSet *winSet = [NSMutableSet set];
         for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            [winSet addObject:[NSValue valueWithNonretainedObject:w]];
+        }
+        for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+            NSArray *ws = poc_tryKVC(sc, @[@"windows"]);
+            for (UIWindow *w in ws) {
+                if (w) [winSet addObject:[NSValue valueWithNonretainedObject:w]];
+            }
+        }
+        for (NSValue *vv in winSet) {
+            UIWindow *w = [vv nonretainedObjectValue];
+            if (!w) continue;
             NSMutableArray *containers = [NSMutableArray array];
             __block void (^walk)(UIView *, int);
             void (^walkBlock)(UIView *, int) = ^(UIView *v, int depth) {
