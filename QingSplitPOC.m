@@ -566,7 +566,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         // v0.3.11: 去除手势区灰色背景（用户要求）——容器背景透明，只留白色边框线 + 角落把手
         self.backgroundColor = [UIColor clearColor];
         self.layer.cornerRadius = 12;
-        self.layer.borderWidth = 2;
+        self.layer.borderWidth = 0;   // v0.4.15: 去白框 —— 手势指引（横条/竖条/图标）已足够
         self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
         self.clipsToBounds = YES;
         _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
@@ -1005,6 +1005,10 @@ static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host �
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
 static BOOL g_floatClosed = NO;   // v0.3.18: 用户点击关闭后保持关闭（防止 1s tick 自动重建）；目标 scene 消失后复位
 static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 的 SB 呈现容器（隐藏后露出桌面）
+// v0.4.15: 手动触发 —— SB 常显"浮"按钮，点击把当前前台 App 拉进浮窗（不再自动弹）
+static UIWindow *g_triggerWin = nil;
+static UIButton *g_triggerBtn = nil;
+static BOOL g_triggerArmed = NO;
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
 // v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
@@ -1196,6 +1200,8 @@ static void poc_close_float(void) {
         g_floatClosed = YES;           // v0.3.18: 保持关闭 —— 不自动重建；目标 scene 消失后才复位
         // v0.3.18: g_lastSid 保留（用于判断目标 scene 何时消失）；g_lastCtx 归零
         g_lastCtx = 0;
+        // v0.4.15: 浮窗关闭 → "浮"按钮重现（手动触发入口）
+        if (g_triggerWin) g_triggerWin.hidden = NO;
         poc_log(@"FLOAT_CLOSED — scene untouched, window removed, stay closed until target app exits");
     } @catch (NSException *e) {
         poc_log(@"FLOAT_CLOSE_EXC %@", e.name);
@@ -1440,6 +1446,9 @@ static void poc_try_float(void) {
         poc_keep_float();
         return;
     }
+    // v0.4.15: 手动触发 —— 只有"浮"按钮被按下才尝试建浮窗；不再每次自动弹
+    if (!g_triggerArmed) return;
+    g_triggerArmed = NO;
 
     // 1. 确定目标
     // v0.4.0: 正式插件化 —— 设置优先：targets（逗号分隔多 app，留空=auto）> /tmp/qsp_target（兼容）
@@ -1608,6 +1617,8 @@ static void poc_try_float(void) {
     poc_mark_ok();
     g_lastSid = [sid copy];
     g_lastCtx = ctx;
+    // v0.4.15: 浮窗建立 → 隐藏"浮"按钮（浮窗有关闭按钮，无需双入口）
+    if (g_triggerWin) g_triggerWin.hidden = YES;
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
     // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
     // 在 POC_OK 后执行：若 SB 容器隐藏失败不影响浮窗（只日志）。
@@ -1637,13 +1648,100 @@ static void poc_try_float(void) {
 // 注入入口：延迟 5s 启动，之后每 3s 尝试一次（等待目标 App scene 出现）
 @interface POCBootstrap : NSObject
 @end
+
+// v0.4.15: 手动触发按钮 —— SB 常显 44×44 半透明"浮"圆钮，可拖动（记忆位置）
+// 点击 → g_triggerArmed → 下次 tick 把当前前台 App 拉进浮窗
+static void poc_create_trigger_button(void) {
+    @try {
+        g_triggerWin = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+        g_triggerWin.windowLevel = 998.0;   // 低于浮窗 999.0（浮窗激活时按钮隐藏，无层级冲突）
+        g_triggerWin.userInteractionEnabled = YES;
+        NSString *winScene = @"nil";
+        @try {
+            Class wsc = NSClassFromString(@"UIWindowScene");
+            id chosen = nil; id fallback = nil;
+            for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+                if (!wsc || ![sc isKindOfClass:wsc]) continue;
+                if (!fallback) fallback = sc;
+                NSString *sid = poc_scene_id(sc);
+                if ([sid containsString:@"SuperHighLevelSystemAperture"]) { chosen = sc; break; }
+            }
+            id use = chosen ?: fallback;
+            if (use) {
+                [g_triggerWin setValue:use forKey:@"windowScene"];
+                winScene = poc_scene_id(use);
+            }
+        } @catch (NSException *e) { }
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = [UIColor clearColor];
+        g_triggerWin.rootViewController = vc;
+        // 位置：记忆优先（triggerX/triggerY），默认右侧中上 (386, 300)
+        CGFloat bx = 386, by = 300;
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:poc_state_paths()[0]];
+        if (d) {
+            CGFloat tx = [d[@"triggerX"] doubleValue], ty = [d[@"triggerY"] doubleValue];
+            if (tx > 0 && ty > 0) { bx = tx; by = ty; }
+        }
+        bx = MAX(8, MIN(bx, 430 - 52)); by = MAX(120, MIN(by, 932 - 52));
+        g_triggerBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        g_triggerBtn.frame = CGRectMake(bx, by, 44, 44);
+        g_triggerBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
+        g_triggerBtn.layer.cornerRadius = 22;
+        g_triggerBtn.layer.borderWidth = 1;
+        g_triggerBtn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.3].CGColor;
+        [g_triggerBtn setTitle:@"浮" forState:UIControlStateNormal];
+        [g_triggerBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        g_triggerBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+        [g_triggerBtn addTarget:self action:@selector(poc_trigger_tapped) forControlEvents:UIControlEventTouchUpInside];
+        // 可拖动（记忆位置到状态 plist）
+        UIPanGestureRecognizer *tgPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(poc_trigger_panned:)];
+        [g_triggerBtn addGestureRecognizer:tgPan];
+        [vc.view addSubview:g_triggerBtn];
+        g_triggerWin.hidden = NO;
+        poc_log(@"TRIGGER_BTN shown at=(%.0f,%.0f) scene=%@", bx, by, winScene);
+    } @catch (NSException *e) {
+        poc_log(@"TRIGGER_BTN_EXC %@", e.name);
+    }
+}
+
 @implementation POCBootstrap
++ (void)poc_trigger_tapped {
+    // v0.4.15: 点击"浮"按钮 → 下次 tick 把当前前台 App 拉进浮窗
+    if (g_win) { if (g_triggerWin) g_triggerWin.hidden = YES; return; }  // 浮窗已开（正常按钮已隐藏）
+    g_triggerArmed = YES;
+    poc_log(@"TRIGGER_TAP armed=1");
+}
++ (void)poc_trigger_panned:(UIPanGestureRecognizer *)g {
+    // v0.4.15: 拖动按钮 → 实时移动 + 松手记忆位置（状态 plist triggerX/triggerY）
+    if (!g_triggerBtn) return;
+    if (g.state == UIGestureRecognizerStateChanged) {
+        CGPoint t = [g translationInView:g_triggerBtn.superview];
+        CGRect f = g_triggerBtn.frame;
+        f.origin.x = MAX(8, MIN(f.origin.x + t.x, 430 - 52));
+        f.origin.y = MAX(120, MIN(f.origin.y + t.y, 932 - 52));
+        g_triggerBtn.frame = f;
+        [g setTranslation:CGPointZero inView:g_triggerBtn.superview];
+    } else if (g.state == UIGestureRecognizerStateEnded) {
+        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:poc_state_paths()[0]];
+        if (!d) d = [NSMutableDictionary dictionary];
+        d[@"triggerX"] = @(g_triggerBtn.frame.origin.x);
+        d[@"triggerY"] = @(g_triggerBtn.frame.origin.y);
+        for (NSString *p in poc_state_paths()) {
+            if ([d writeToFile:p atomically:YES]) {
+                poc_log(@"TRIGGER_POS_SAVED (%.0f,%.0f)", g_triggerBtn.frame.origin.x, g_triggerBtn.frame.origin.y);
+                break;
+            }
+        }
+    }
+}
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.14 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.15 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
+        // v0.4.15: 手动触发按钮（SB 常显）
+        poc_create_trigger_button();
         // v0.3.15: KEEP tick 3s → 1s —— 主屏回退响应提速（app 重新打开后 ≤1s 隐藏全屏，缓解双 host 白屏闪烁）
         NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm) {
             poc_try_float();
