@@ -185,6 +185,40 @@ static NSString *poc_scene_id(id scene) {
     return v ? [NSString stringWithFormat:@"%@", v] : @"nil";
 }
 
+// v0.3.4: 读取 FBSceneLayer 的原始尺寸（native）—— 多 key + selector 直调 + 屏幕兜底
+// v0.3.3 实锤：KVC valueForKey:@"frame" 返回 CGRectZero（key/时机问题），native 拿不到 → contain 失效
+static CGSize poc_layer_native_size(id layer) {
+    if (!layer) return CGSizeZero;
+    NSArray *cRectKeys = @[@"frame", @"bounds", @"_frame", @"layerFrame"];
+    for (NSString *k in cRectKeys) {
+        @try {
+            id v = [layer valueForKey:k];
+            if ([v respondsToSelector:@selector(CGRectValue)]) {
+                CGRect r = [v CGRectValue];
+                if (r.size.width > 0 && r.size.height > 0) return r.size;
+            }
+        } @catch (NSException *e) { }
+    }
+    NSArray *cSizeKeys = @[@"size", @"contentSize", @"_size", @"contentBoundsSize"];
+    for (NSString *k in cSizeKeys) {
+        @try {
+            id v = [layer valueForKey:k];
+            if ([v respondsToSelector:@selector(CGSizeValue)]) {
+                CGSize s = [v CGSizeValue];
+                if (s.width > 0 && s.height > 0) return s;
+            }
+        } @catch (NSException *e) { }
+    }
+    @try {
+        if ([layer respondsToSelector:@selector(frame)]) {
+            CGRect (*fn)(id, SEL) = (CGRect (*)(id, SEL))objc_msgSend;
+            CGRect r = fn(layer, @selector(frame));
+            if (r.size.width > 0 && r.size.height > 0) return r.size;
+        }
+    } @catch (NSException *e) { }
+    return CGSizeZero;
+}
+
 static BOOL poc_is_target_scene(NSString *sid, NSString *wanted) {
     if ([sid isEqualToString:@"nil"]) return NO;
     // v0.1.1: FBScene identifier 格式为 "sceneID:<bundle-id>-default"（app scene 判据）
@@ -236,12 +270,17 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
             NSString *t = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
             NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
             // v0.3.3: 记录 scene layer 原始 frame（native 尺寸，host 内容按此渲染）
+            // v0.3.4: 多 key + selector 直调 + 屏幕兜底
             CGRect lf = CGRectZero;
             @try {
                 id fv = [l valueForKey:@"frame"];
                 if (fv && [fv respondsToSelector:@selector(CGRectValue)]) lf = [fv CGRectValue];
             } @catch (NSException *e) { }
-            poc_log(@"LAYER_SCAN type=%@ ctx=%ld cls=%@ frame=%@", t, (long)c, poc_cls(l), NSStringFromCGRect(lf));
+            CGSize native = poc_layer_native_size(l);
+            NSString *nsrc = @"layer";
+            if (native.width <= 0) { native = [[UIScreen mainScreen] bounds].size; nsrc = @"screen"; }
+            poc_log(@"LAYER_SCAN type=%@ ctx=%ld cls=%@ frame=%@ native=%@ src=%@", t, (long)c, poc_cls(l),
+                    NSStringFromCGRect(lf), NSStringFromCGSize(native), nsrc);
             if (!layer && [t isEqualToString:@"0"]) layer = l;
         }
         if (!layer && allLayers.count) layer = allLayers.firstObject;
@@ -682,12 +721,10 @@ static void poc_keep_float(void) {
                 if (g_container) {
                     QSFloatContainer *c = (QSFloatContainer *)g_container;
                     // v0.3.3: 同步 native 尺寸（scene layer 可能随重建变化）
-                    CGRect lf = CGRectZero;
-                    @try {
-                        id fv = [newLayer valueForKey:@"frame"];
-                        if (fv && [fv respondsToSelector:@selector(CGRectValue)]) lf = [fv CGRectValue];
-                    } @catch (NSException *e) { }
-                    if (lf.size.width > 0 && lf.size.height > 0) c.nativeContentSize = lf.size;
+                    // v0.3.4: 多 key + 屏幕兜底
+                    CGSize ns = poc_layer_native_size(newLayer);
+                    if (ns.width <= 0) ns = [[UIScreen mainScreen] bounds].size;
+                    c.nativeContentSize = ns;
                     [c.contentView removeFromSuperview];
                     c.contentView = nhv;
                     [c setNeedsLayout];
@@ -808,13 +845,13 @@ static void poc_try_float(void) {
         g_diag = diag;
         // 3.1 v0.3.0: 浮窗容器（边框拖动/缩放）+ host view 作为内容
         // v0.3.3: 记录 scene layer 原始尺寸 → 容器 contain 等比缩放（内容不拉伸变形）
-        CGSize native = CGSizeZero;
-        @try {
-            if (layer) {
-                id fv = [layer valueForKey:@"frame"];
-                if (fv && [fv respondsToSelector:@selector(CGRectValue)]) native = [fv CGRectValue].size;
-            }
-        } @catch (NSException *e) { }
+        // v0.3.4: native 获取失败 → 屏幕尺寸兜底（全屏 app 的 scene layer ≈ 屏幕）
+        CGSize native = poc_layer_native_size(layer);
+        NSString *nsrc = @"layer";
+        if (native.width <= 0 || native.height <= 0) {
+            native = [[UIScreen mainScreen] bounds].size;
+            nsrc = @"screen-fallback";
+        }
         QSFloatContainer *container = [[QSFloatContainer alloc]
             initWithFrame:CGRectMake((g_win.bounds.size.width - 340) / 2.0,
                                      (g_win.bounds.size.height - 500) / 2.0,
@@ -825,10 +862,10 @@ static void poc_try_float(void) {
         [container layoutIfNeeded];
         g_container = container;
         g_hostView = hv;
-        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=RED_DIAG native=%@",
+        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=RED_DIAG native=%@ src=%@",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
-                NSStringFromCGSize(native));
+                NSStringFromCGSize(native), nsrc);
     } @catch (NSException *e) {
         poc_log(@"WINDOW_EXC %@ — abort", e.name);
         return;
