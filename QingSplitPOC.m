@@ -539,6 +539,16 @@ static void poc_try_float(void) {
     // 5. 标记 OK（崩溃闸门复位）
     poc_mark_ok();
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
+    // v0.1.6: 60s 后自动关闭红色诊断背景（只清背景，浮窗 host 保留）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        @try {
+            UIViewController *rvc = g_win.rootViewController;
+            if (rvc) rvc.view.backgroundColor = [UIColor clearColor];
+            poc_log(@"RED_AUTOCLOSE done — red diagnostic background removed");
+        } @catch (NSException *e) {
+            poc_log(@"RED_AUTOCLOSE_EXC %@", e.name);
+        }
+    });
 }
 
 // 注入入口：延迟 5s 启动，之后每 3s 尝试一次（等待目标 App scene 出现）
