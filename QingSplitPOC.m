@@ -236,7 +236,23 @@ static BOOL poc_is_target_scene(NSString *sid, NSString *wanted) {
     if (![sid hasPrefix:@"sceneID:"]) return NO;
     if ([sid containsString:@"com.apple."]) return NO;
     if ([sid containsString:@"Stheno"] || [sid containsString:@"QingSplit"]) return NO;
-    if (wanted.length && ![sid hasPrefix:wanted]) return NO;
+    if (wanted.length) {
+        // v0.4.24: wanted 兼容三种格式 —— 完整 sceneID / sceneID 前缀 / 纯 bundle id（未运行应用）
+        if (![sid hasPrefix:wanted]) {
+            BOOL matched = NO;
+            if (![wanted hasPrefix:@"sceneID:"]) {
+                NSString *w2 = [@"sceneID:" stringByAppendingString:wanted];
+                if ([sid hasPrefix:w2]) {
+                    matched = YES;
+                } else {
+                    NSString *sb = [sid substringFromIndex:@"sceneID:".length];
+                    if ([sb containsString:@"-"]) sb = [sb substringToIndex:[sb rangeOfString:@"-"].location];
+                    if ([sb isEqualToString:wanted]) matched = YES;
+                }
+            }
+            if (!matched) return NO;
+        }
+    }
     return YES;
 }
 
@@ -259,7 +275,7 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         if (!fallback) { fallback = sc; fallbackSid = sid; }
         if (wantedList.count) {
             for (NSString *w in wantedList) {
-                if ([sid hasPrefix:w]) {
+                if (poc_is_target_scene(sid, w)) {   // v0.4.24: 归一化匹配（兼容纯 bundle id）
                     fallback = sc; fallbackSid = sid;
                     break;
                 }
@@ -1017,6 +1033,8 @@ static NSArray *g_pickerRows = nil;      // v0.4.19: 选择器行视图（跟手
 static CGFloat g_pickerRowH = 50;       // v0.4.22: 自适应行高（铺满触发条 150pt）
 static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene id（前缀匹配）
 static BOOL g_triggerArmed = NO;
+static BOOL g_launchPending = NO;        // v0.4.24: 已选择未运行应用 → 启动后等待 scene 出现
+static NSTimeInterval g_launchPendingAt = 0;
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
 // v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
@@ -1455,7 +1473,8 @@ static void poc_try_float(void) {
         return;
     }
     // v0.4.15: 手动触发 —— 只有"浮"按钮被按下才尝试建浮窗；不再每次自动弹
-    if (!g_triggerArmed) return;
+    // v0.4.24: 未运行应用启动中（g_launchPending）也保持轮询，直到 scene 出现/超时
+    if (!g_triggerArmed && !g_launchPending) return;
     g_triggerArmed = NO;
     // v0.4.20: 手动选择覆盖"关闭保持"—— 用户明确点选应用，即使 g_floatClosed=YES（曾点 ×）也必须建浮窗
     g_floatClosed = NO;
@@ -1475,6 +1494,22 @@ static void poc_try_float(void) {
     }
     NSDictionary *target = poc_pick_target(wanted);
     if (!target) {
+        if (g_launchPending) {
+            // v0.4.24: 启动中的应用 scene 尚未出现 → 持续轮询（3s 节流日志，15s 超时放弃）
+            NSTimeInterval nowT = CACurrentMediaTime();
+            if (nowT - g_launchPendingAt > 15.0) {
+                g_launchPending = NO;
+                g_manualSid = nil;
+                poc_log(@"LAUNCH_TIMEOUT wanted=%@ — app scene never appeared", wanted);
+            } else {
+                static NSTimeInterval lastWaitLog = 0;
+                if (nowT - lastWaitLog >= 3.0) {
+                    lastWaitLog = nowT;
+                    poc_log(@"LAUNCH_WAIT wanted=%@", wanted);
+                }
+            }
+            return;
+        }
         // v0.3.17: TARGET_NONE 日志节流（1s tick 下闲置会刷屏）——每 10s 一条
         static NSTimeInterval lastNoneLog = 0;
         NSTimeInterval nowT = CACurrentMediaTime();
@@ -1632,6 +1667,7 @@ static void poc_try_float(void) {
     // v0.4.15: 浮窗建立 → 隐藏"浮"按钮（浮窗有关闭按钮，无需双入口）
     if (g_triggerWin) g_triggerWin.hidden = YES;
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
+    g_launchPending = NO;   // v0.4.24: 启动链路完成（scene 已找到并建窗）
     // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
     // 在 POC_OK 后执行：若 SB 容器隐藏失败不影响浮窗（只日志）。
     // v0.4.0: 主屏回退开关（设置）
@@ -1695,10 +1731,73 @@ static NSArray *poc_running_apps(void) {
     return apps;
 }
 
-static void poc_picker_select(NSString *sid) {
+// v0.4.24: 启动未运行应用（SpringBoard 进程内 LSApplicationWorkspace）
+static BOOL poc_launch_app(NSString *bundle) {
+    @try {
+        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+        if (ws) {
+            BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:bundle];
+            return ok;
+        }
+    } @catch (NSException *e) {
+        poc_log(@"LAUNCH_EXC %@", e.name);
+    }
+    return NO;
+}
+
+// v0.4.24: 全部可选择应用 = 运行中（优先）+ 已安装（按名称排序，取前 maxRows）
+static NSArray *poc_all_apps(void) {
+    NSArray *running = poc_running_apps();
+    NSMutableArray *all = [NSMutableArray arrayWithArray:running];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (NSDictionary *a in running) [seen addObject:a[@"bundle"]];
+    @try {
+        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+        id proxies = [ws performSelector:@selector(allApplications)];
+        if ([proxies isKindOfClass:[NSArray class]]) {
+            for (id p in (NSArray *)proxies) {
+                NSString *bid = nil;
+                @try {
+                    id v = [p performSelector:@selector(bundleIdentifier)];
+                    if ([v isKindOfClass:[NSString class]]) bid = v;
+                } @catch (NSException *e) { }
+                if (!bid.length || [bid hasPrefix:@"com.apple."]) continue;
+                if ([bid containsString:@"Stheno"] || [bid containsString:@"QingSplit"]) continue;
+                if ([seen containsObject:bid]) continue;
+                [seen addObject:bid];
+                NSString *name = bid;
+                @try {
+                    id v = [p performSelector:@selector(localizedName)];
+                    if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) name = v;
+                } @catch (NSException *e) { }
+                [all addObject:@{@"sid": bid, @"bundle": bid, @"running": @NO, @"name": name}];
+            }
+        }
+    } @catch (NSException *e) { }
+    // 未运行部分按名称排序
+    NSArray *sortedNotRun = [all sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        BOOL ra = [a[@"running"] boolValue], rb = [b[@"running"] boolValue];
+        if (ra != rb) return ra ? NSOrderedAscending : NSOrderedDescending;   // 运行中在前
+        NSString *na = a[@"name"] ?: @"", *nb = b[@"name"] ?: @"";
+        return [na compare:nb options:NSCaseInsensitiveSearch];
+    }];
+    return sortedNotRun;
+}
+
+static void poc_picker_select(NSDictionary *app) {
+    NSString *sid = app[@"sid"];
     g_manualSid = [sid copy];
     g_triggerArmed = YES;
-    poc_log(@"PICKER_SELECT sid=%@ armed=1", sid);
+    if ([app[@"running"] boolValue]) {
+        g_launchPending = NO;
+        poc_log(@"PICKER_SELECT sid=%@ running=1 armed=1", sid);
+    } else {
+        // v0.4.24: 未运行 → 启动应用，tick 持续轮询等待 scene 出现后建浮窗
+        g_launchPending = YES;
+        g_launchPendingAt = CACurrentMediaTime();
+        BOOL ok = poc_launch_app(sid);
+        poc_log(@"PICKER_SELECT sid=%@ running=0 launch=%d armed=1", sid, ok);
+    }
     poc_picker_hide();
 }
 
@@ -1713,7 +1812,9 @@ static void poc_picker_show(void) {
         }
         // 面板 —— v0.4.22: 宽度 220，高度/位置自适应：行高铺满触发条(150pt)，行区对齐触发条 y=391
         UIView *panel = g_pickerPanel;
-        NSArray *apps = poc_running_apps();
+        NSArray *appsAll = poc_all_apps();                // v0.4.24: 运行中 + 已安装
+        NSArray *apps = appsAll;
+        if (apps.count > 12) apps = [apps subarrayWithRange:NSMakeRange(0, 12)];   // 面板不超屏
         NSUInteger n = apps.count ? apps.count : 1;
         CGFloat rowH = (n <= 3) ? (150.0 / n) : 50.0;         // 行高：1 行=150 铺满红线，2=75，3=50，多则 50
         if (rowH < 44) rowH = 44;
@@ -1784,7 +1885,7 @@ static void poc_picker_show(void) {
                 [txtWrap addSubview:iv];
             }
             UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(icon ? 46 : 0, (rowH - 18) / 2.0, 150, 18)];
-            lbl.text = appName.length ? appName : a[@"bundle"];
+            lbl.text = appName.length ? appName : (a[@"name"] ?: a[@"bundle"]);   // v0.4.24: 未运行应用用 localizedName
             lbl.textColor = [UIColor whiteColor];
             lbl.font = [UIFont systemFontOfSize:14];
             lbl.adjustsFontSizeToFitWidth = YES;
@@ -1902,9 +2003,9 @@ static void poc_setup_edge_trigger(void) {
                 if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
             }
             if (idx >= 0) {
-                NSArray *apps = poc_running_apps();
+                NSArray *apps = poc_all_apps();   // v0.4.24: 列表含已安装应用
                 if (idx < (NSInteger)apps.count) {
-                    poc_picker_select(apps[idx][@"sid"]);   // 松手停在某 App 附近 → 浮窗打开
+                    poc_picker_select(apps[idx]);   // 松手停在某 App 附近 → 浮窗打开（未运行则先启动）
                 } else {
                     poc_picker_hide();
                 }
@@ -1915,16 +2016,16 @@ static void poc_setup_edge_trigger(void) {
     }
 }
 + (void)poc_picker_row:(UIButton *)btn {
-    // v0.4.16: 点击应用行 → 选中该 scene 进浮窗
-    NSArray *apps = poc_running_apps();
+    // v0.4.16: 点击应用行 → 选中该 scene 进浮窗（v0.4.24: 传整个 app dict，支持未运行启动）
+    NSArray *apps = poc_all_apps();
     NSInteger idx = btn.tag - 1000;
     if (idx >= 0 && idx < (NSInteger)apps.count) {
-        poc_picker_select(apps[idx][@"sid"]);
+        poc_picker_select(apps[idx]);
     }
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.23 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.24 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
