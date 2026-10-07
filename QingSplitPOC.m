@@ -546,6 +546,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     CGPoint _lpOrigin, _lpStart;
     UIView *_knobL, *_knobR;   // v0.4.10: 角落把手引用（吸附改宽后强制重定位，防跑出窗口）
     UIButton *_closeBtn;       // v0.4.10: 关闭按钮引用
+    UITapGestureRecognizer *_doubleTap;   // v0.4.13: 双击顶部条重置窗口尺寸（细长条无法操作时恢复）
 }
 // v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
 - (void)setContentView:(UIView *)cv {
@@ -573,14 +574,19 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
         _longPress.minimumPressDuration = 0.3;
         _longPress.allowableMovement = 30;
+        // v0.4.13: 双击顶部条重置窗口（内容区触摸被 host 接管，长按不生效 —— 重置放触摸正常的顶部条）
+        _doubleTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onDoubleTap:)];
+        _doubleTap.numberOfTapsRequired = 2;
         _pan.delegate = self;
         _pinch.delegate = self;
         _scalePan.delegate = self;
         _longPress.delegate = self;
+        _doubleTap.delegate = self;
         [self addGestureRecognizer:_pan];
         [self addGestureRecognizer:_pinch];
         [self addGestureRecognizer:_scalePan];
         [self addGestureRecognizer:_longPress];
+        [self addGestureRecognizer:_doubleTap];
         // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）；v0.3.15: 缩小到 20×20 跟随角落区
         [self addCornerKnob:CGRectMake(12, self.bounds.size.height - 32, 20, 20)];
         [self addCornerKnob:CGRectMake(self.bounds.size.width - 32, self.bounds.size.height - 32, 20, 20)];
@@ -698,6 +704,15 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         return YES;
     }
     if (gr == _pinch) return NO;   // v0.3.12: 双指缩放已去除（只保留角落缩放）
+    if (gr == _doubleTap) {
+        // v0.4.13: 双击仅限顶部 44px 条（触摸正常区，内容区被 host 接管收不到）
+        CGRect b = self.bounds;
+        CGRect topBar = CGRectMake(0, 0, b.size.width, 44);
+        if (!CGRectContainsPoint(topBar, p)) return NO;
+        CGRect closeZone = CGRectMake(b.size.width - 44, 0, 44, 44);
+        if (CGRectContainsPoint(closeZone, p)) return NO;
+        return YES;
+    }
     if (gr == _longPress) {
         // v0.4.9: 长按整窗（内容区也可）—— 排除底部条/边缘（pan 更直接）与角落（scalePan）与关闭按钮
         CGRect b = self.bounds;
@@ -719,8 +734,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return NO;
 }
-- (void)onLongPress:(UILongPressGestureRecognizer *)g {
-    if (g.state == UIGestureRecognizerStateBegan) {
+- (void)onLongPress:(UILongPressGestureRecognizer *)g {    if (g.state == UIGestureRecognizerStateBegan) {
         _lpActive = YES;
         _lpOrigin = self.center;
         _lpStart = [g locationInView:self.superview];
@@ -771,6 +785,26 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             poc_save_float_state(f);
         }
     }
+}
+// v0.4.13: 双击顶部条重置窗口 —— 细长条/畸形尺寸无法操作时，恢复默认尺寸（340×内容比例，居中）
+- (void)onDoubleTap:(UITapGestureRecognizer *)g {
+    poc_log(@"RESET_TAP");
+    CGSize native = self.nativeContentSize;
+    CGFloat defW = 340, defH = 500;
+    if (native.width > 0 && native.height > 0) {
+        defH = defW * (native.height / native.width);
+        if (defH > 860) { defH = 860; defW = defH * (native.width / native.height); }
+    }
+    CGRect b = self.superview ? self.superview.bounds : CGRectMake(0, 0, 430, 932);
+    CGRect rf = CGRectMake((b.size.width - defW) / 2.0, (b.size.height - defH) / 2.0, defW, defH);
+    _halfSnapped = NO;   // 重置脱离半屏态
+    poc_log(@"RESET_TAP to=%@", NSStringFromCGRect(rf));
+    UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.82
+                                                                          initialVelocity:CGVectorMake(0, 0)];
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:tp];
+    [anim addAnimations:^{ self.frame = rf; }];
+    [anim startAnimation];
+    poc_save_float_state(rf);
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
@@ -1536,7 +1570,7 @@ static void poc_try_float(void) {
 @implementation POCBootstrap
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.12 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.13 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
