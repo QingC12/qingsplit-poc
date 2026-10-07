@@ -610,12 +610,18 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
         [g setTranslation:CGPointZero inView:self.superview];
     }
 }
-// v0.3.8: 角落滑动缩放 —— 垂直分量指数映射（向上=放大，向下=缩小），保持宽高比
+// v0.3.8: 角落滑动缩放 —— v0.3.9 方向改为用户要求：
+//   朝对角（左下→右上 / 右下→左上）= 缩小；朝外直线（远离角落）= 放大
+//   用 translation 在"内方向"上的投影做指数映射，保持宽高比
 - (void)onScalePan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
         CGPoint t = [g translationInView:self];
-        CGFloat dy = t.y;
-        CGFloat factor = exp(-dy / 300.0);
+        CGPoint start = [g locationInView:self];
+        // 确定起始角：左下 (1,-1) 内方向，右下 (-1,-1) 内方向
+        CGFloat dx = 1.0, dy = -1.0;
+        if (start.x > self.bounds.size.width / 2.0) { dx = -1.0; dy = -1.0; }
+        CGFloat dot = t.x * dx + t.y * dy;   // >0 朝对角（内）= 缩小；<0 朝外 = 放大
+        CGFloat factor = exp(-dot / 400.0);
         CGFloat ratio = self.bounds.size.height / self.bounds.size.width;
         CGFloat newW = self.bounds.size.width * factor;
         if (newW < 180) newW = 180;
@@ -735,18 +741,28 @@ static void poc_keep_float(void) {
                 NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
                 if ([t isEqualToString:@"0"]) [type0s addObject:@{@"layer": l, @"ctx": @(c)}];
             }
-            // v0.3.7: lc 变化 = 页面切换事件 → 优先切到"新 type=0 layer"（ctx != 当前 host ctx）
+            // v0.3.7: lc 变化 = 页面切换事件 → 优先切到"新 layer"（ctx != 当前 host ctx）
             // 酷安实锤：二级页面 lc 1→2，新页面内容在新 layer，旧 layer context 白屏
+            // v0.3.9 修正：酷安新增 layer 是 type=1（不是 type=0！），切换不限于 type=0 —— 所有 layer 都算
+            NSMutableArray *allLayersInfo = [NSMutableArray array];
+            for (id l in arr) {
+                NSString *t = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
+                NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
+                [allLayersInfo addObject:@{@"layer": l, @"ctx": @(c), @"type": t}];
+                if ([t isEqualToString:@"0"]) [type0s addObject:@{@"layer": l, @"ctx": @(c)}];
+            }
             static NSInteger g_lastLc = -1;
-            if (g_lastLc >= 0 && (NSInteger)arr.count != g_lastLc && type0s.count) {
+            if (g_lastLc >= 0 && (NSInteger)arr.count != g_lastLc && allLayersInfo.count) {
                 NSInteger switchCtx = 0; id switchLayer = nil;
-                for (NSDictionary *d in type0s) {
+                for (NSDictionary *d in allLayersInfo) {
                     NSInteger c = [d[@"ctx"] integerValue];
                     if (c != g_lastCtx) { switchLayer = d[@"layer"]; switchCtx = c; break; }
                 }
                 if (switchLayer) {
                     newLayer = switchLayer; newCtx = switchCtx;
                     poc_log(@"LAYER_SWITCH lc=%ld→%ld ctx=%ld→%ld", (long)g_lastLc, (long)arr.count, (long)g_lastCtx, (long)newCtx);
+                } else {
+                    poc_log(@"LAYER_SWITCH_NONE lc=%ld→%ld (all layers share ctx=%ld)", (long)g_lastLc, (long)arr.count, (long)g_lastCtx);
                 }
             }
             g_lastLc = arr.count;
@@ -800,7 +816,13 @@ static void poc_keep_float(void) {
                     for (id l in arr3) {
                         NSString *t3 = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
                         NSInteger c3 = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
-                        [ms appendFormat:@" t%@=ctx%ld", t3, (long)c3];
+                        // v0.3.9: 加 hidden 标志（判断哪个 layer 是当前显示层）
+                        NSString *h3 = @"?";
+                        @try {
+                            id hv = [l valueForKey:@"hidden"];
+                            if (hv) h3 = [hv boolValue] ? @"H" : @"V";
+                        } @catch (NSException *e) { }
+                        [ms appendFormat:@" t%@=ctx%ld(%@)", t3, (long)c3, h3];
                     }
                     poc_log(@"KEEP_L lc=%ld%@", (long)lc, ms);
                 } @catch (NSException *e) { }
