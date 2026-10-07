@@ -576,6 +576,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             cv.layer.cornerRadius = 40;
             cv.layer.masksToBounds = YES;
             [self addSubview:cv];
+            // v0.4.28: 内容垫底 —— 底部拖动条/关闭/角落把手/手势指示不被 host 内容遮挡
+            [self sendSubviewToBack:cv];
         }
         [self setNeedsLayout];
     }
@@ -1603,12 +1605,13 @@ static void poc_try_float(void) {
             }
         } @catch (NSException *e) { }
         // v0.1.4 可见性诊断 → v0.1.7 独立红色视图（背景 clear，红色全靠 g_diag，20s 后移除）
+        // v0.4.28: 去掉红色诊断背景 → 深色占位（内容 host 出现后即覆盖）
         POCController *vc = [[POCController alloc] init];
         vc.view.backgroundColor = [UIColor clearColor];
         g_win.rootViewController = vc;
         UIView *diag = [[UIView alloc] initWithFrame:vc.view.bounds];
         diag.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        diag.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.35];
+        diag.backgroundColor = [UIColor colorWithWhite:0.06 alpha:0.85];
         diag.userInteractionEnabled = NO;   // 不拦截触摸
         [vc.view addSubview:diag];
         g_diag = diag;
@@ -1640,7 +1643,7 @@ static void poc_try_float(void) {
         [container layoutIfNeeded];
         g_container = container;
         g_hostView = hv;
-        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=RED_DIAG native=%@ src=%@",
+        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=DARK native=%@ src=%@",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
                 NSStringFromCGSize(native), nsrc);
@@ -1680,14 +1683,14 @@ static void poc_try_float(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         poc_log(@"TICK_30S main-thread-alive");
     });
-    // v0.1.8: 红背景自动关闭缩短到 20s（用户要求减少等待）
+    // v0.1.8: 红背景自动关闭缩短到 20s（用户要求减少等待）；v0.4.28: 背景已改深色，20s 后移除占位层
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         @try {
             if (g_diag) {
                 [g_diag removeFromSuperview];
                 g_diag = nil;
             }
-            poc_log(@"RED_AUTOCLOSE done — red diagnostic background removed");
+            poc_log(@"DIAG_AUTOCLOSE done — placeholder background removed");
         } @catch (NSException *e) {
             poc_log(@"RED_AUTOCLOSE_EXC %@", e.name);
         }
@@ -1709,6 +1712,9 @@ static UIImpactFeedbackGenerator *g_pickerImpFB = nil;
 
 static void poc_picker_hide(void) {
     @try {
+        // v0.4.28: 关闭时同步隐藏外部点击拦截层（避免常驻吃掉全屏触摸）
+        UIView *back = [g_pickerVC.view viewWithTag:777];
+        if (back) back.hidden = YES;
         if (g_pickerPanel) {
             [UIView animateWithDuration:0.2 animations:^{
                 g_pickerPanel.frame = CGRectMake(430, g_pickerPanel.frame.origin.y,
@@ -1833,7 +1839,22 @@ static void poc_picker_show(void) {
             panel.clipsToBounds = YES;
             g_pickerPanel = panel;
             [g_pickerVC.view addSubview:panel];
+            // v0.4.28: 选择器打开期间点击面板外部（非 strip 区）→ 关闭选择器
+            UIButton *back = [UIButton buttonWithType:UIButtonTypeCustom];
+            back.tag = 777;
+            back.backgroundColor = [UIColor clearColor];
+            back.frame = g_pickerVC.view.bounds;
+            back.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            back.hidden = YES;   // 默认隐藏 —— 仅在选择器打开时拦截外部点击
+            [back addTarget:[POCBootstrap class] action:@selector(poc_picker_backdrop:) forControlEvents:UIControlEventTouchUpInside];
+            [g_pickerVC.view insertSubview:back belowSubview:panel];
+            // strip 提到最上，避免被 backdrop 拦截（右缘滑入/右滑关闭仍可用）
+            UIView *strip = [g_pickerVC.view viewWithTag:778];
+            if (strip) [g_pickerVC.view bringSubviewToFront:strip];
         }
+        // v0.4.28: 打开期间启用外部点击关闭
+        UIButton *back2 = [g_pickerVC.view viewWithTag:777];
+        if (back2) back2.hidden = NO;
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         g_pickerGrid = nil;
         // 标题
@@ -1898,6 +1919,7 @@ static void poc_setup_edge_trigger(void) {
         g_pickerVC = vc;
         // v0.4.20: 右缘触发条（20px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
         UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 20, 391, 20, 150)];
+        strip.tag = 778;   // v0.4.28: backdrop 需要定位并提到最上
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
         strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
@@ -2048,7 +2070,11 @@ static void poc_setup_edge_trigger(void) {
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         if (g_pickerPanel && !g_pickerPanel.hidden) {
             CGPoint t = [g translationInView:g.view];
-            if (t.x > 30) { poc_picker_hide(); return; }   // v0.4.22: 向右回滑 → 取消
+            CGPoint v = [g velocityInView:g.view];
+            if (t.x > 20 || v.x > 500) {   // v0.4.28: 阈值放宽（30→20）+ 速度辅助，右滑回红线区更可靠
+                poc_log(@"PICKER_SWIPE_CLOSE t=%.0f v=%.0f", t.x, v.x);
+                poc_picker_hide(); return;
+            }
             CGRect pf = g_pickerPanel.frame;
             CGFloat off = g_pickerGrid ? g_pickerGrid.contentOffset.y : 0;
             CGFloat gx = p.x - pf.origin.x;
@@ -2070,9 +2096,16 @@ static void poc_setup_edge_trigger(void) {
         }
     }
 }
+// v0.4.28: 选择器打开期间点击面板外部（非右缘 strip）→ 关闭选择器
++ (void)poc_picker_backdrop:(UIButton *)b {
+    @try {
+        poc_log(@"PICKER_BACKDROP_CLOSE");
+        poc_picker_hide();
+    } @catch (NSException *e) { }
+}
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.27 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.28 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
