@@ -640,15 +640,17 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     CGRect inner = CGRectInset(self.bounds, 24, 24);
     CGSize native = self.nativeContentSize;
     if (native.width > 0 && native.height > 0) {
-        // v0.3.3: contain 等比 —— host 保持 native bounds，transform 缩放到内容区（内容不拉伸变形，跟随缩放）
+        // v0.4.12: contain → fill —— 内容填满窗口（MAX 缩放 + 裁剪），消除细长窗上下/左右大留白
+        // 列表类 App（酷安/Filza 单列布局）中间列正好全显示；clipsToBounds 负责裁剪
         CGFloat sx = inner.size.width / native.width;
         CGFloat sy = inner.size.height / native.height;
-        CGFloat s = MIN(sx, sy);
+        CGFloat s = MAX(sx, sy);
         if (s > 0) {
             cv.bounds = CGRectMake(0, 0, native.width, native.height);
             cv.center = CGPointMake(CGRectGetMidX(inner), CGRectGetMidY(inner));
             cv.transform = CGAffineTransformMakeScale(s, s);
         }
+        poc_log(@"CONTENT_FILL %@ s=%.3f", (sx > sy) ? @"w-fit" : @"h-fit", s);
     } else {
         cv.frame = inner;
         cv.transform = CGAffineTransformIdentity;
@@ -1534,7 +1536,7 @@ static void poc_try_float(void) {
 @implementation POCBootstrap
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.11 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.12 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
