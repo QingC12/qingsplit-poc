@@ -463,7 +463,18 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 @implementation QSFloatContainer {
     UIPanGestureRecognizer *_pan;
     UIPinchGestureRecognizer *_pinch;
+    UIView *_contentView;   // v0.3.1: 手动 ivar（自定义 setter）
 }
+// v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
+- (void)setContentView:(UIView *)cv {
+    if (_contentView != cv) {
+        [_contentView removeFromSuperview];
+        _contentView = cv;
+        if (cv) [self addSubview:cv];
+        [self setNeedsLayout];
+    }
+}
+- (UIView *)contentView { return _contentView; }
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
@@ -483,17 +494,17 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
-    // 内容区内边距 10（边框拖动区）
-    self.contentView.frame = CGRectInset(self.bounds, 10, 10);
+    // 内容区内边距 14（边框拖动区，v0.3.1 加宽便于操作）
+    self.contentView.frame = CGRectInset(self.bounds, 14, 14);
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = [super hitTest:point withEvent:event];
     if (h == self) return self;   // 边框 → 容器（手势）
     return h;                     // 内容 → app
 }
-// 手势仅起点在内容区外时激活（内容区触摸全部交给 app）
+// v0.3.1: Pan 限边框起点；Pinch 始终允许（双指中点常落内容区，原判定会误拒）
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
-    if (gr == _pan || gr == _pinch) {
+    if (gr == _pan) {
         CGPoint p = [gr locationInView:self];
         if (self.contentView && CGRectContainsPoint(self.contentView.frame, p)) return NO;
     }
