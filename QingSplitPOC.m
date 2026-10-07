@@ -1799,15 +1799,18 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.17: 右缘透明接收条（40px 宽，y 150-750）—— 触摸直接命中本窗口（level 998 最上层），
-        // 手势必然进入命中链（v0.4.16 挂 SB key window 失败：后加手势不在 SB 手势环境命中链）
+        // v0.4.18: 右缘透明接收条（40px 宽，y 150-750）—— 触摸直接命中本窗口（level 998 最上层）。
+        // v0.4.17 UIScreenEdgePan 仍不触发（iOS17 系统手势仲裁抢占右缘触摸）→ 改 UIPanGestureRecognizer：
+        // 不依赖"边缘"识别，触摸命中 strip 即接管；淡红提示方便用户对准触发区域
         UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 40, 150, 40, 600)];
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
-        UIScreenEdgePanGestureRecognizer *ep = [[UIScreenEdgePanGestureRecognizer alloc]
-                                                initWithTarget:[POCBootstrap class]
-                                                action:@selector(poc_edge_panned:)];
-        ep.edges = UIRectEdgeRight;
-        [strip addGestureRecognizer:ep];
+        strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
+                                       initWithTarget:[POCBootstrap class]
+                                       action:@selector(poc_edge_panned:)];
+        pan.minimumNumberOfTouches = 1;
+        pan.maximumNumberOfTouches = 1;
+        [strip addGestureRecognizer:pan];
         [vc.view addSubview:strip];
         g_triggerWin.hidden = NO;
         poc_log(@"EDGE_TRIGGER armed strip=%@", NSStringFromCGRect(strip.frame));
