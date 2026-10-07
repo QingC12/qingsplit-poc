@@ -32,6 +32,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <unistd.h>
 #import <sys/stat.h>
 
 // ----------------------------------------------------------------------------
@@ -89,7 +90,7 @@ static id poc_msgSend_initWithSceneLayer(Class cls, id layer) {
     SEL sel = sel_registerName("initWithSceneLayer:");
     if (![cls instancesRespondToSelector:sel]) return nil;
     id (*fn)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
-    return fn([[cls alloc] init], sel, layer);
+    return fn([cls alloc], sel, layer);
 }
 
 // 运行时调用: _UIScenePresenterOwner _setActivePrioritizedPresenter:(presenter)
@@ -297,27 +298,26 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
             walk = walkBlock;
             walk(w, 0);
             for (UIView *container in found) {
-                    @try {
-                        id scene = poc_tryKVC(container, @[@"_scene", @"scene"]);
-                        if (!scene) continue;
-                        NSString *sid = poc_scene_id(scene);
-                        if (![sid isEqualToString:targetSid]) continue;
-                        id presenter = poc_tryKVC(container, @[@"presenter", @"_presenter"]);
-                        if (!presenter) {
-                            id ds = poc_tryKVC(container, @[@"_dataSource", @"dataSource"]);
-                            presenter = poc_tryKVC(ds, @[@"presenter", @"_presenter"]);
-                        }
-                        id owner = poc_tryKVC(presenter, @[@"_owner", @"owner"]);
-                        if (owner && poc_msgSend_setActivePrioritizedPresenter(owner, presenter)) {
-                            raised++;
-                            poc_log(@"ZORDER_RAISE_OK sid=%@ presenter=%@ owner=%@",
-                                    sid, poc_cls(presenter), poc_cls(owner));
-                        } else {
-                            poc_log(@"ZORDER_RAISE_SKIP sid=%@ (owner=%@ presenter=%@)",
-                                    sid, poc_cls(owner), poc_cls(presenter));
-                        }
-                    } @catch (NSException *e) { }
-                }
+                @try {
+                    id scene = poc_tryKVC(container, @[@"_scene", @"scene"]);
+                    if (!scene) continue;
+                    NSString *sid = poc_scene_id(scene);
+                    if (![sid isEqualToString:targetSid]) continue;
+                    id presenter = poc_tryKVC(container, @[@"presenter", @"_presenter"]);
+                    if (!presenter) {
+                        id ds = poc_tryKVC(container, @[@"_dataSource", @"dataSource"]);
+                        presenter = poc_tryKVC(ds, @[@"presenter", @"_presenter"]);
+                    }
+                    id owner = poc_tryKVC(presenter, @[@"_owner", @"owner"]);
+                    if (owner && poc_msgSend_setActivePrioritizedPresenter(owner, presenter)) {
+                        raised++;
+                        poc_log(@"ZORDER_RAISE_OK sid=%@ presenter=%@ owner=%@",
+                                sid, poc_cls(presenter), poc_cls(owner));
+                    } else {
+                        poc_log(@"ZORDER_RAISE_SKIP sid=%@ (owner=%@ presenter=%@)",
+                                sid, poc_cls(owner), poc_cls(presenter));
+                    }
+                } @catch (NSException *e) { }
             }
         }
     } @catch (NSException *e) { }
