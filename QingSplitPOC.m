@@ -456,6 +456,32 @@ static UIView *g_hostView = nil;
 static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，20s 后移除）
 static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene id
 static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host 的 contextID
+static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
+
+// v0.2.0: 只读探测 —— 目标 scene 的激活相关 API 面 + presenter 状态
+// B 方案第一问：iOS 17 的 FBScene 暴露了哪些激活/保持 API 可用
+static void poc_probe_scene_apis(id scene) {
+    if (!scene || g_apiProbed) return;
+    g_apiProbed = YES;
+    NSArray *selNames = @[
+        @"activate", @"activateWithTransitionContext:", @"activateWithCompletion:",
+        @"deactivate", @"deactivateWithTransitionContext:",
+        @"_applyUpdateToSettings:", @"_updateToSettings:",
+        @"_activateScene:", @"activateScene:"
+    ];
+    for (NSString *n in selNames) {
+        if ([scene respondsToSelector:NSSelectorFromString(n)]) {
+            poc_log(@"SCENE_API_FOUND %@", n);
+        }
+    }
+    // presenter 侧：scene 是否回指 presentation manager
+    id pm = poc_tryKVC(scene, @[@"_presentationManager", @"presentationManager", @"presenterManager"]);
+    if (pm) poc_log(@"SCENE_PM cls=%@", poc_cls(pm));
+    else poc_log(@"SCENE_PM nil");
+    // scene 的 observer/生命周期委托面
+    id ob = poc_tryKVC(scene, @[@"_observer", @"observer"]);
+    if (ob) poc_log(@"SCENE_OBSERVER cls=%@", poc_cls(ob));
+}
 
 // v0.1.8: 保持模式 —— 切换应用后 scene layer 可能被系统重建（contextID 漂移），
 // 每 3s 检测：窗口存活 / host 存活 / contextID 变化 → 自动重建 host view
@@ -487,8 +513,12 @@ static void poc_keep_float(void) {
             if (!newLayer && arr.count) { newLayer = arr.firstObject; newCtx = [poc_tryKVC(newLayer, @[@"_contextID", @"contextID"]) integerValue]; }
             break;
         }
-        poc_log(@"KEEP winAlive=%d hostAlive=%d ctx=%ld last=%ld", winAlive, hostAlive,
-                (long)newCtx, (long)g_lastCtx);
+        // v0.2.0: 记录 activationState 序列（切走后降到几是关键证据）
+        NSNumber *act = poc_tryKVC(sc, @[@"activationState", @"_activationState"]);
+        poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld", winAlive, hostAlive,
+                act ?: @"nil", (long)newCtx, (long)g_lastCtx);
+        // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
+        if (newCtx == 0) poc_probe_scene_apis(sc);
         // contextID 漂移 → 重建 host view（保持浮窗内容跟随 scene layer）
         if (newCtx > 0 && newCtx != g_lastCtx && newLayer) {
             poc_log(@"HOST_REFRESH ctx=%ld→%ld", (long)g_lastCtx, (long)newCtx);
