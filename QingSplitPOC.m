@@ -586,9 +586,12 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 // v0.3.3: 判定直接用 inset 内容区（transform 下 contentView.frame 不再等于 inset 区域）
 // v0.3.6: inset 与 layoutSubviews 同步 24px
 // v0.3.8: 角落 60×60 → scalePan（左下/右下缩放）；其余边框 → pan（拖动）
+// v0.3.12: 手势精简（用户要求）——只保留：
+//   - 角落缩放（60×60 左下/右下）
+//   - 底部移动（底部 40px 横条拖动，排除角落）
+//   双指 Pinch 禁用
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
     CGPoint p = [gr locationInView:self];
-    CGRect inner = CGRectInset(self.bounds, 24, 24);
     if (gr == _scalePan) {
         CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
         CGRect br = CGRectMake(self.bounds.size.width - 60, self.bounds.size.height - 60, 60, 60);
@@ -596,12 +599,16 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
         return YES;
     }
     if (gr == _pan) {
-        if (CGRectContainsPoint(inner, p)) return NO;
-        // 角落区域交给 scalePan（避免两手势竞争）
+        // v0.3.12: 只有底部 40px 横条可拖动（用户要求：底部移动悬浮窗）
+        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 40, self.bounds.size.width, 40);
+        if (!CGRectContainsPoint(bottomBar, p)) return NO;
+        // 角落区归 scalePan（避免竞争）
         CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
         CGRect br = CGRectMake(self.bounds.size.width - 60, self.bounds.size.height - 60, 60, 60);
         if (CGRectContainsPoint(bl, p) || CGRectContainsPoint(br, p)) return NO;
+        return YES;
     }
+    if (gr == _pinch) return NO;   // v0.3.12: 双指缩放已去除（只保留角落缩放）
     return YES;
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
@@ -609,6 +616,8 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
         CGPoint t = [g translationInView:self.superview];
         self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y);
         [g setTranslation:CGPointZero inView:self.superview];
+    } else if (g.state == UIGestureRecognizerStateEnded) {
+        poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
     }
 }
 // v0.3.8: 角落滑动缩放 —— v0.3.9 方向改为用户要求：
@@ -632,6 +641,8 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
         CGFloat newH = newW * ratio;
         self.bounds = CGRectMake(0, 0, newW, newH);
         [g setTranslation:CGPointZero inView:self];
+    } else if (g.state == UIGestureRecognizerStateEnded) {
+        poc_save_float_state(self.frame);   // v0.3.12: 尺寸记忆
     }
 }
 - (void)onPinch:(UIPinchGestureRecognizer *)g {
@@ -658,6 +669,107 @@ static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图�
 static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene id
 static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host 的 contextID
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
+static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 的 SB 呈现容器（隐藏后露出桌面）
+
+// v0.3.12: 浮窗状态记忆（位置/尺寸持久化到 Preferences plist）
+static NSString *poc_state_path(void) {
+    return @"/var/jb/var/mobile/Library/Preferences/com.qingsplit.poc.plist";
+}
+static void poc_save_float_state(CGRect f) {
+    @try {
+        NSDictionary *d = @{@"ox": @(f.origin.x), @"oy": @(f.origin.y),
+                            @"w": @(f.size.width), @"h": @(f.size.height)};
+        if ([d writeToFile:poc_state_path() atomically:YES]) {
+            poc_log(@"STATE_SAVE %@", NSStringFromCGRect(f));
+        } else {
+            poc_log(@"STATE_SAVE_FAIL %@", NSStringFromCGRect(f));
+        }
+    } @catch (NSException *e) {
+        poc_log(@"STATE_SAVE_EXC %@", e.name);
+    }
+}
+static CGRect poc_load_float_state(void) {
+    CGRect d = CGRectMake((430.0 - 340.0) / 2.0, (932.0 - 500.0) / 2.0, 340, 500);
+    @try {
+        NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:poc_state_path()];
+        if (d2) {
+            CGFloat ox = [d2[@"ox"] doubleValue], oy = [d2[@"oy"] doubleValue];
+            CGFloat w = [d2[@"w"] doubleValue], h = [d2[@"h"] doubleValue];
+            if (w >= 180 && w <= 430 && h >= 180 && h <= 932) {
+                ox = MAX(0, MIN(ox, 430.0 - w));
+                oy = MAX(0, MIN(oy, 932.0 - h));
+                d = CGRectMake(ox, oy, w, h);
+            }
+        }
+        poc_log(@"STATE_LOAD %@", NSStringFromCGRect(d));
+    } @catch (NSException *e) {
+        poc_log(@"STATE_LOAD_EXC %@", e.name);
+    }
+    return d;
+}
+
+// v0.3.12: 主屏回退 —— 在 SB 视图树中找目标 scene 的呈现容器（_UISceneLayerHostContainerView）
+// 链（探针 v0.1.2/0.1.3 已验证）：容器 → _dataSource(_UIScenePresentationView) → presenter → owner → scene
+// 也尝试容器直持 _scene（探针注释：容器持有 _scene + _presentationContext + _dataSource）
+static UIView *poc_search_sb_container(UIView *v, NSString *sid, int depth) {
+    if (!v || depth > 16) return nil;
+    if ([poc_cls(v) isEqualToString:@"_UISceneLayerHostContainerView"]) {
+        @try {
+            NSString *scid = nil;
+            id scene = poc_tryKVC(v, @[@"_scene", @"scene"]);
+            if (scene) scid = poc_scene_id(scene);
+            if (!scid) {
+                id ds = poc_tryKVC(v, @[@"_dataSource", @"dataSource"]);
+                id presenter = ds ? poc_tryKVC(ds, @[@"presenter", @"_presenter"]) : nil;
+                id owner = presenter ? poc_tryKVC(presenter, @[@"owner", @"_owner", @"presenterOwner", @"_presenterOwner"]) : nil;
+                id sc2 = owner ? poc_tryKVC(owner, @[@"scene"]) : nil;
+                if (sc2) scid = poc_scene_id(sc2);
+            }
+            if (scid && [scid isEqualToString:sid]) return v;
+        } @catch (NSException *e) { }
+    }
+    for (UIView *sub in v.subviews) {
+        UIView *r = poc_search_sb_container(sub, sid, depth + 1);
+        if (r) return r;
+    }
+    return nil;
+}
+static UIView *poc_find_sb_container(NSString *sid) {
+    for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+        UIView *r = poc_search_sb_container(w, sid, 0);
+        if (r) return r;
+    }
+    return nil;
+}
+// 隐藏目标 app 的全屏呈现（主屏不显示 → 露出桌面）。WRITE RISK = MEDIUM：
+//   - 只改 SB 视图树的 hidden 状态（可恢复），不碰 scene 状态机
+//   - app 退出(lc==0)时 KEEP 自动恢复显示；SB 重启自然复原
+//   - 最坏风险：SB 布局/动画异常 → respring（闸门兜底，可 dpkg -r 回滚）
+static void poc_screen_hide(NSString *sid) {
+    if (!sid || g_sbContainer) return;
+    @try {
+        g_sbContainer = poc_find_sb_container(sid);
+        if (g_sbContainer) {
+            [g_sbContainer setHidden:YES];
+            poc_log(@"SCREEN_HIDE_OK cls=%@", poc_cls(g_sbContainer));
+        } else {
+            poc_log(@"SCREEN_HIDE_NOTFOUND");
+        }
+    } @catch (NSException *e) {
+        g_sbContainer = nil;
+        poc_log(@"SCREEN_HIDE_EXC %@", e.name);
+    }
+}
+static void poc_screen_restore(void) {
+    if (!g_sbContainer) return;
+    @try {
+        [g_sbContainer setHidden:NO];
+        poc_log(@"SCREEN_SHOW_RESTORE");
+    } @catch (NSException *e) {
+        poc_log(@"SCREEN_SHOW_EXC %@", e.name);
+    }
+    g_sbContainer = nil;
+}
 
 // v0.2.1: B 方案最小写 —— 空窗期调用 activateWithTransitionContext: 拉回 scene
 // WRITE RISK = MEDIUM
@@ -841,6 +953,8 @@ static void poc_keep_float(void) {
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
         if (newCtx == 0) {
             poc_probe_scene_apis(targetScene);
+            // v0.3.12: 目标 app 退出（layer 清空）→ 恢复主屏显示
+            if (lc == 0) poc_screen_restore();
             // v0.2.1: B 方案最小写 —— activateWithTransitionContext: 拉回 scene
             // v0.2.2: 已禁用！真机实锤：裸 FBSSceneTransitionContext 触发 SB 崩溃（安全模式）。
             //         保持只读，切换保留列为专项（需逆向 context 内部结构或 hook scene 生命周期）。
@@ -993,10 +1107,13 @@ static void poc_try_float(void) {
             ch = cw * (native.height / native.width);
             if (ch > 860) { ch = 860; cw = ch * (native.width / native.height); }
         }
-        QSFloatContainer *container = [[QSFloatContainer alloc]
-            initWithFrame:CGRectMake((g_win.bounds.size.width - cw) / 2.0,
-                                     (g_win.bounds.size.height - ch) / 2.0,
-                                     cw, ch)];
+        // v0.3.12: 优先恢复记忆的浮窗位置/尺寸（拖动/缩放结束时已持久化）
+        CGRect memFrame = poc_load_float_state();
+        CGRect cframe = CGRectMake((g_win.bounds.size.width - cw) / 2.0,
+                                   (g_win.bounds.size.height - ch) / 2.0,
+                                   cw, ch);
+        if (memFrame.size.width > 0 && memFrame.size.height > 0) cframe = memFrame;
+        QSFloatContainer *container = [[QSFloatContainer alloc] initWithFrame:cframe];
         container.nativeContentSize = native;
         container.contentView = hv;   // layoutSubviews 安排 14px 内边距 + contain 等比
         [vc.view addSubview:container];
@@ -1020,6 +1137,9 @@ static void poc_try_float(void) {
     g_lastSid = [sid copy];
     g_lastCtx = ctx;
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
+    // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
+    // 在 POC_OK 后执行：若 SB 容器隐藏失败不影响浮窗（只日志）。
+    poc_screen_hide(sid);
     // v0.1.7: 心跳日志验证主线程活性（若 10s/30s TICK 缺失 → 主线程被 host 阻塞）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         poc_log(@"TICK_10S main-thread-alive");
