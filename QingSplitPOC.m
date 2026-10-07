@@ -458,8 +458,35 @@ static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene i
 static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host 的 contextID
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
 
-// v0.2.0: 只读探测 —— 目标 scene 的激活相关 API 面 + presenter 状态
-// B 方案第一问：iOS 17 的 FBScene 暴露了哪些激活/保持 API 可用
+// v0.2.1: B 方案最小写 —— 空窗期调用 activateWithTransitionContext: 拉回 scene
+// WRITE RISK = MEDIUM
+//   - 可能把目标 app 短暂拉回主屏（行为错误，用户切走即恢复，可观察）
+//   - context 未配置可能触发 SB 状态机异常 → respring（闸门兜底，可回滚）
+//   - 不碰数据/越狱
+// 保护：节流 6s 一次 + @try + 闸门
+static void poc_scene_keepalive(id scene, NSInteger lastCtx) {
+    if (!scene) return;
+    static double lastCall = 0;
+    double now = CACurrentMediaTime();
+    if (now - lastCall < 6.0) return;  // 节流
+    lastCall = now;
+    @try {
+        SEL sel = sel_registerName("activateWithTransitionContext:");
+        if (![scene respondsToSelector:sel]) {
+            poc_log(@"KEEPALIVE_API_MISSING");
+            return;
+        }
+        id ctx = nil;
+        Class c = NSClassFromString(@"FBSSceneTransitionContext");
+        if (c) ctx = [[c alloc] init];
+        poc_log(@"KEEPALIVE_CALL lastCtx=%ld ctxCls=%@", (long)lastCtx, ctx ? NSStringFromClass(c) : @"nil");
+        void (*fn)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        fn(scene, sel, ctx);
+        poc_log(@"KEEPALIVE_CALLED");
+    } @catch (NSException *e) {
+        poc_log(@"KEEPALIVE_EXC %@", e.name);
+    }
+}
 static void poc_probe_scene_apis(id scene) {
     if (!scene || g_apiProbed) return;
     g_apiProbed = YES;
@@ -516,11 +543,22 @@ static void poc_keep_float(void) {
             break;
         }
         // v0.2.0: 记录 activationState 序列（切走后降到几是关键证据）
-        NSNumber *act = poc_tryKVC(targetScene, @[@"activationState", @"_activationState"]);
+        // v0.2.1: KVC 拿不到（key 名不对），改用 objc_msgSend 直调方法
+        NSString *actStr = @"nil";
+        @try {
+            if ([targetScene respondsToSelector:@selector(activationState)]) {
+                NSInteger (*fn)(id, SEL) = (NSInteger (*)(id, SEL))objc_msgSend;
+                actStr = [NSString stringWithFormat:@"%ld", (long)fn(targetScene, @selector(activationState))];
+            }
+        } @catch (NSException *e) { }
         poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld", winAlive, hostAlive,
-                act ?: @"nil", (long)newCtx, (long)g_lastCtx);
+                actStr, (long)newCtx, (long)g_lastCtx);
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
-        if (newCtx == 0) poc_probe_scene_apis(targetScene);
+        if (newCtx == 0) {
+            poc_probe_scene_apis(targetScene);
+            // v0.2.1: B 方案最小写 —— 空窗期 activate 拉回 scene（节流 6s）
+            poc_scene_keepalive(targetScene, g_lastCtx);
+        }
         // contextID 漂移 → 重建 host view（保持浮窗内容跟随 scene layer）
         if (newCtx > 0 && newCtx != g_lastCtx && newLayer) {
             poc_log(@"HOST_REFRESH ctx=%ld→%ld", (long)g_lastCtx, (long)newCtx);
