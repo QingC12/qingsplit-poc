@@ -538,17 +538,14 @@ static void poc_try_float(void) {
     poc_log(@"TARGET sid=%@ pid=%ld lm=%@ layersKind=%@ layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
             sid, (long)pid, lmCls, layersKind, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
 
-    // v0.1.7: 前台检测 —— 目标是 frontmost(foregroundActive) 时不要 host！
-    // 前台 App 的 CA context 正被系统 SB 容器消费，双 host 竞争会阻塞 SB 主线程
-    // （症状：红屏不消失 + 屏幕无法点击 + dispatch_after 不执行）
-    // Stheno 浮窗的 app 均为非前台（P3 已验证 SCENE_HOSTING_SURVIVES_FOREGROUND_LOSS）
+    // v0.1.9: 前台检测放宽 —— 不再阻塞前台 host！
+    // v0.1.8 实锤：后台 app 的 scene layer 被 iOS 周期性重建/冻结（ctx 漂移+空窗），
+    // 浮窗内容无法持续。Stheno 托管的 app 保持 foregroundActive(ACT=1)，layer 才稳定。
+    // v0.1.6"主线程阻塞"实为误判（全屏窗口吞触摸 + 60s 未到截图太早，非真阻塞）。
+    // 现在前台直接 host（保留 hitTest 穿透 + 心跳，若真阻塞 TICK 会立即暴露）。
     @try {
         NSNumber *act = poc_tryKVC(scene, @[@"activationState", @"_activationState"]);
-        if ([act integerValue] == 1) {
-            poc_log(@"TARGET_FRONT_WAIT sid=%@ act=%@ — waiting for app to leave foreground (switch away)", sid, act ?: @"nil");
-            return; // 下个 tick 重试
-        }
-        poc_log(@"TARGET_BG_OK sid=%@ act=%@", sid, act ?: @"nil");
+        poc_log(@"TARGET_ACT sid=%@ act=%@", sid, act ?: @"nil");
     } @catch (NSException *e) { }
 
     // 2. 渲染 host view（Phase 0 核心风险点）
