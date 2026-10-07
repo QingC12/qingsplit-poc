@@ -495,6 +495,24 @@ static void poc_try_float(void) {
         g_win.windowLevel = 999.0;
         g_win.hidden = NO;
         g_win.userInteractionEnabled = YES;
+        // v0.1.5: SB 是 scene-based，未关联 windowScene 的窗口不渲染（SthenoWindow 实测 SCENE=SuperHighLevelSystemAperture）
+        // 优先关联 SuperHighLevelSystemAperture scene，兜底第一个 UIWindowScene
+        NSString *winScene = @"nil";
+        @try {
+            Class wsc = NSClassFromString(@"UIWindowScene");
+            id chosen = nil; id fallback = nil;
+            for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+                if (!wsc || ![sc isKindOfClass:wsc]) continue;
+                if (!fallback) fallback = sc;
+                NSString *sid = poc_scene_id(sc);
+                if ([sid containsString:@"SuperHighLevelSystemAperture"]) { chosen = sc; break; }
+            }
+            id use = chosen ?: fallback;
+            if (use) {
+                [g_win setValue:use forKey:@"windowScene"];
+                winScene = poc_scene_id(use);
+            }
+        } @catch (NSException *e) { }
         // v0.1.4 可见性诊断：rootVC 视图半透明红色 —— 若用户看到红色覆盖层，
         //   说明窗口显示正常、问题在 host 内容；若什么都看不到，说明窗口本身未显示
         POCController *vc = [[POCController alloc] init];
@@ -507,9 +525,9 @@ static void poc_try_float(void) {
                               320, 480);
         [vc.view addSubview:hv];
         g_hostView = hv;
-        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ host=%@ bg=RED_DIAG",
+        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ host=%@ scene=%@ bg=RED_DIAG",
                 poc_cls(g_win), g_win.windowLevel,
-                NSStringFromCGRect(g_win.frame), poc_cls(hv));
+                NSStringFromCGRect(g_win.frame), poc_cls(hv), winScene);
     } @catch (NSException *e) {
         poc_log(@"WINDOW_EXC %@ — abort", e.name);
         return;
