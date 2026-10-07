@@ -434,10 +434,18 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 @interface POCController : UIViewController
 @end
 @implementation POCController
+// v0.1.7: 触摸穿透 —— 浮窗背景区域返回 nil（穿透到下层窗口），
+// 只让 host view 区域响应。否则全屏窗口会拦截整个屏幕的触摸。
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = [super hitTest:point withEvent:event];
+    if (!h || h == self.view) return nil;
+    return h;
+}
 @end
 
 static UIWindow *g_win = nil;
 static UIView *g_hostView = nil;
+static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，60s 后移除）
 
 static void poc_try_float(void) {
     if (g_win) return; // 只允许一个浮窗（第一版）
@@ -462,6 +470,19 @@ static void poc_try_float(void) {
     NSString *layerType = layer ? poc_str(poc_tryKVC(layer, @[@"_type", @"type"])) : @"nil";
     poc_log(@"TARGET sid=%@ pid=%ld lm=%@ layersKind=%@ layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
             sid, (long)pid, lmCls, layersKind, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
+
+    // v0.1.7: 前台检测 —— 目标是 frontmost(foregroundActive) 时不要 host！
+    // 前台 App 的 CA context 正被系统 SB 容器消费，双 host 竞争会阻塞 SB 主线程
+    // （症状：红屏不消失 + 屏幕无法点击 + dispatch_after 不执行）
+    // Stheno 浮窗的 app 均为非前台（P3 已验证 SCENE_HOSTING_SURVIVES_FOREGROUND_LOSS）
+    @try {
+        NSNumber *act = poc_tryKVC(scene, @[@"activationState", @"_activationState"]);
+        if ([act integerValue] == 1) {
+            poc_log(@"TARGET_FRONT_WAIT sid=%@ act=%@ — waiting for app to leave foreground (switch away)", sid, act ?: @"nil");
+            return; // 下个 tick 重试
+        }
+        poc_log(@"TARGET_BG_OK sid=%@ act=%@", sid, act ?: @"nil");
+    } @catch (NSException *e) { }
 
     // 2. 渲染 host view（Phase 0 核心风险点）
     //    轨道 A：FBSceneLayer 对象（后台/浮窗托管 app）→ 路径 1/2/3
@@ -513,13 +534,18 @@ static void poc_try_float(void) {
                 winScene = poc_scene_id(use);
             }
         } @catch (NSException *e) { }
-        // v0.1.4 可见性诊断：rootVC 视图半透明红色 —— 若用户看到红色覆盖层，
-        //   说明窗口显示正常、问题在 host 内容；若什么都看不到，说明窗口本身未显示
+        // v0.1.4 可见性诊断 → v0.1.7 独立红色视图（背景 clear，红色全靠 g_diag，60s 后 removeFromSuperview）
         POCController *vc = [[POCController alloc] init];
-        vc.view.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.35];
+        vc.view.backgroundColor = [UIColor clearColor];
         g_win.rootViewController = vc;
+        UIView *diag = [[UIView alloc] initWithFrame:vc.view.bounds];
+        diag.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        diag.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.35];
+        diag.userInteractionEnabled = NO;   // 不拦截触摸
+        [vc.view addSubview:diag];
+        g_diag = diag;
         // 3.1 host view 放窗口中央（固定 320×480，第一版无手势）
-        // 加到 rootVC.view（window 子视图层级更可控）
+        // 加到 rootVC.view（在 diag 之后 → diag 上层，红色下浮窗内容可见）
         hv.frame = CGRectMake((g_win.bounds.size.width - 320) / 2.0,
                               (g_win.bounds.size.height - 480) / 2.0,
                               320, 480);
@@ -539,11 +565,20 @@ static void poc_try_float(void) {
     // 5. 标记 OK（崩溃闸门复位）
     poc_mark_ok();
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
-    // v0.1.6: 60s 后自动关闭红色诊断背景（只清背景，浮窗 host 保留）
+    // v0.1.7: 心跳日志验证主线程活性（若 10s/30s TICK 缺失 → 主线程被 host 阻塞）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        poc_log(@"TICK_10S main-thread-alive");
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        poc_log(@"TICK_30S main-thread-alive");
+    });
+    // 60s 后自动关闭红色诊断背景（移除 g_diag，浮窗 host 保留）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         @try {
-            UIViewController *rvc = g_win.rootViewController;
-            if (rvc) rvc.view.backgroundColor = [UIColor clearColor];
+            if (g_diag) {
+                [g_diag removeFromSuperview];
+                g_diag = nil;
+            }
             poc_log(@"RED_AUTOCLOSE done — red diagnostic background removed");
         } @catch (NSException *e) {
             poc_log(@"RED_AUTOCLOSE_EXC %@", e.name);
