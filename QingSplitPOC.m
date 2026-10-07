@@ -1133,7 +1133,13 @@ static void poc_try_float(void) {
     wanted = [wanted stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSDictionary *target = poc_pick_target(wanted);
     if (!target) {
-        poc_log(@"TARGET_NONE wanted=%@ — waiting for app scene", wanted ?: @"(auto)");
+        // v0.3.17: TARGET_NONE 日志节流（1s tick 下闲置会刷屏）——每 10s 一条
+        static NSTimeInterval lastNoneLog = 0;
+        NSTimeInterval nowT = CACurrentMediaTime();
+        if (nowT - lastNoneLog >= 10.0) {
+            lastNoneLog = nowT;
+            poc_log(@"TARGET_NONE wanted=%@ — waiting for app scene", wanted ?: @"(auto)");
+        }
         return;
     }
     NSString *sid = target[@"sid"];
@@ -1304,7 +1310,12 @@ static void poc_try_float(void) {
         }];
         // 兜底：60s 后若仍无目标则停表并记录（不崩溃）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 65 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            if (!g_win) { [t invalidate]; poc_log(@"TIMEOUT no target scene in 60s — idle"); }
+            // v0.3.17: idle 后不停表（用户随时打开目标 app 都能出浮窗，无需重启），并复位闸门 ok ——
+        // 闲置启动无任何窗口写操作、SB 存活，不等于崩溃；防止 boot 累积误触发 SAFE_MODE
+        if (!g_win) {
+            poc_log(@"TIMEOUT no target scene in 60s — idle, keep polling");
+            poc_mark_ok();
+        }
         });
     });
 }
