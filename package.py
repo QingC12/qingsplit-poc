@@ -29,7 +29,7 @@ PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
 PREFS_SRC = os.path.join(BASE, "QingSplitPrefs.plist")
 PREFS_BUNDLE_DIR = os.path.join(BASE, "QingSplitPrefs.bundle")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.4.5_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.4.6_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
@@ -107,6 +107,8 @@ def main():
         ("var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/", None, True, 0o755),
         (PREFS_BUNDLE_ROOT_DEST, os.path.join(PREFS_BUNDLE_DIR, "Root.plist"), False, 0o644),
         (PREFS_BUNDLE_EXE_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitPrefs"), False, 0o755),
+        ("var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Info.plist",
+         os.path.join(PREFS_BUNDLE_DIR, "Info.plist"), False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
 
