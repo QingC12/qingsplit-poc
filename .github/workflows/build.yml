@@ -68,27 +68,57 @@ jobs:
           cat > QingSplitPrefsRootListController.m <<'EOF'
           #import <Foundation/Foundation.h>
           #import <UIKit/UIKit.h>
+          #import <objc/message.h>
           #import <objc/runtime.h>
 
-          // v0.4.4: 动态类无 bundle 关联，loadSpecifiersFromPlistName: 的 bundleForClass 返回 nil
-          // → 手动从 QingSplitPrefs.bundle 加载 Root.plist（多路径兜底）
+          // v0.4.5: 不再依赖 Root.plist / loadSpecifiersFromPlistName ——
+          // 动态类无 bundle 关联 + plist 顶层为 dict，两条路都拿不到 specifiers。
+          // 直接 runtime 构造 PSSpecifier 数组（iOS 17 Settings 渲染同一套对象）。
+          static id qs_mk(Class PS, id name, id target, SEL setSel, SEL getSel, id cell) {
+              SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
+              id (*mk)(id, SEL, id, id, SEL, SEL, id, id, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, id, id))objc_msgSend;
+              return mk(PS, mkSel, name, target, setSel, getSel, nil, cell, nil);
+          }
+          static void qs_prop(id spec, id value, NSString *key) {
+              void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
+              setProp(spec, NSSelectorFromString(@"setProperty:forKey:"), value, key);
+          }
+          static id qs_switch(Class PS, id target, SEL setSel, SEL getSel, NSString *label, NSString *key) {
+              id s = qs_mk(PS, label, target, setSel, getSel, @"PSSwitchCell");
+              qs_prop(s, key, @"key");
+              qs_prop(s, @"com.qingsplit.poc", @"defaults");
+              qs_prop(s, @YES, @"default");
+              return s;
+          }
           static id qs_specifiers(id self, SEL _cmd) {
               id sp = [self valueForKey:@"_specifiers"];
               if (!sp) {
-                  NSString *path = nil;
-                  for (NSBundle *b in [NSBundle allBundles]) {
-                      if ([[b bundlePath] hasSuffix:@"/QingSplitPrefs.bundle"]) {
-                          path = [b pathForResource:@"Root" ofType:@"plist"];
-                          break;
-                      }
+                  Class PS = NSClassFromString(@"PSSpecifier");
+                  if (PS) {
+                      SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
+                      SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
+
+                      id g1 = qs_mk(PS, @"", self, setSel, getSel, @"PSGroupCell");
+                      qs_prop(g1, @"类 Stheno 浮动窗口（初版 POC）。修改设置后需重启 SpringBoard 生效。", @"footerText");
+
+                      id sw = qs_switch(PS, self, setSel, getSel, @"启用悬浮窗", @"enabled");
+
+                      id tf = qs_mk(PS, @"目标 App", self, setSel, getSel, @"PSEditTextCell");
+                      qs_prop(tf, @"targets", @"key");
+                      qs_prop(tf, @"com.qingsplit.poc", @"defaults");
+                      qs_prop(tf, @"", @"default");
+                      qs_prop(tf, @"com.coolapk.app（多个用逗号分隔，留空=所有前台 App）", @"placeholder");
+
+                      id g2 = qs_mk(PS, @"", self, setSel, getSel, @"PSGroupCell");
+                      qs_prop(g2, @"窗口行为", @"footerText");
+
+                      id h = qs_switch(PS, self, setSel, getSel, @"半屏吸附", @"halfSnap");
+                      id e = qs_switch(PS, self, setSel, getSel, @"边缘吸附", @"edgeSnap");
+                      id sh = qs_switch(PS, self, setSel, getSel, @"主屏回退", @"screenHide");
+                      id cb = qs_switch(PS, self, setSel, getSel, @"关闭按钮", @"closeBtn");
+
+                      sp = @[g1, sw, tf, g2, h, e, sh, cb];
                   }
-                  if (!path || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                      path = @"/var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist";
-                  }
-                  if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                      path = @"/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist";
-                  }
-                  sp = [NSArray arrayWithContentsOfFile:path];
                   if (!sp) sp = @[];
                   [self setValue:sp forKey:@"_specifiers"];
               }
@@ -130,5 +160,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.4_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.5_iphoneos-arm64e.deb
           if-no-files-found: warn
