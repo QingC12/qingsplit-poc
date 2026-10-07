@@ -501,6 +501,7 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 //   - Pinch: 缩放容器（含内容）
 //   - 手势仅在"边框区域"激活（起点在 contentView 外），不抢 app 内容交互
 static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化）
+static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义在下方全局区，供 QSFloatContainer 手势 ended 调用）
 
 @interface QSFloatContainer : UIView
 @property (nonatomic, strong) UIView *contentView;
