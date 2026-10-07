@@ -766,6 +766,13 @@ static void poc_keep_float(void) {
                 }
             }
             g_lastLc = arr.count;
+            // v0.3.10 修复：非切换路径优先保持当前 host 的 ctx（防止 lc 不变时又切回第一个 layer → 来回抖动/白屏闪烁）
+            // v0.3.9 实锤：切换后 lc 仍=2，下次 KEEP 取 arr.firstObject（旧层）→ HOST_REFRESH 切回 → 抖动
+            if (!newLayer) {
+                for (NSDictionary *d in allLayersInfo) {
+                    if ([d[@"ctx"] integerValue] == g_lastCtx) { newLayer = d[@"layer"]; newCtx = g_lastCtx; break; }
+                }
+            }
             if (!newLayer && type0s.count) { newLayer = type0s[0][@"layer"]; newCtx = [type0s[0][@"ctx"] integerValue]; }
             if (!newLayer && arr.count) { newLayer = arr.firstObject; newCtx = [poc_tryKVC(newLayer, @[@"_contextID", @"contextID"]) integerValue]; }
             break;
