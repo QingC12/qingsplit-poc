@@ -510,6 +510,7 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 @implementation QSFloatContainer {
     UIPanGestureRecognizer *_pan;
     UIPinchGestureRecognizer *_pinch;
+    UIPanGestureRecognizer *_scalePan;   // v0.3.8: 左下/右下角单指滑动缩放
     UIView *_contentView;   // v0.3.1: 手动 ivar（自定义 setter）
 }
 // v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
@@ -532,12 +533,26 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
         self.clipsToBounds = YES;
         _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
         _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(onPinch:)];
+        _scalePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onScalePan:)];
         _pan.delegate = self;
         _pinch.delegate = self;
+        _scalePan.delegate = self;
         [self addGestureRecognizer:_pan];
         [self addGestureRecognizer:_pinch];
+        [self addGestureRecognizer:_scalePan];
+        // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）
+        [self addCornerKnob:CGRectMake(10, self.bounds.size.height - 34, 24, 24)];
+        [self addCornerKnob:CGRectMake(self.bounds.size.width - 34, self.bounds.size.height - 34, 24, 24)];
     }
     return self;
+}
+- (void)addCornerKnob:(CGRect)f {
+    UIView *k = [[UIView alloc] initWithFrame:f];
+    k.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
+    k.layer.cornerRadius = 12;
+    k.userInteractionEnabled = NO;
+    k.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin;
+    [self addSubview:k];
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
@@ -569,11 +584,22 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 // v0.3.1: Pan 限边框起点；Pinch 始终允许（双指中点常落内容区，原判定会误拒）
 // v0.3.3: 判定直接用 inset 内容区（transform 下 contentView.frame 不再等于 inset 区域）
 // v0.3.6: inset 与 layoutSubviews 同步 24px
+// v0.3.8: 角落 60×60 → scalePan（左下/右下缩放）；其余边框 → pan（拖动）
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
+    CGPoint p = [gr locationInView:self];
+    CGRect inner = CGRectInset(self.bounds, 24, 24);
+    if (gr == _scalePan) {
+        CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
+        CGRect br = CGRectMake(self.bounds.size.width - 60, self.bounds.size.height - 60, 60, 60);
+        if (!CGRectContainsPoint(bl, p) && !CGRectContainsPoint(br, p)) return NO;
+        return YES;
+    }
     if (gr == _pan) {
-        CGPoint p = [gr locationInView:self];
-        CGRect inner = CGRectInset(self.bounds, 24, 24);
         if (CGRectContainsPoint(inner, p)) return NO;
+        // 角落区域交给 scalePan（避免两手势竞争）
+        CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
+        CGRect br = CGRectMake(self.bounds.size.width - 60, self.bounds.size.height - 60, 60, 60);
+        if (CGRectContainsPoint(bl, p) || CGRectContainsPoint(br, p)) return NO;
     }
     return YES;
 }
@@ -582,6 +608,23 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
         CGPoint t = [g translationInView:self.superview];
         self.center = CGPointMake(self.center.x + t.x, self.center.y + t.y);
         [g setTranslation:CGPointZero inView:self.superview];
+    }
+}
+// v0.3.8: 角落滑动缩放 —— 垂直分量指数映射（向上=放大，向下=缩小），保持宽高比
+- (void)onScalePan:(UIPanGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateChanged) {
+        CGPoint t = [g translationInView:self];
+        CGFloat dy = t.y;
+        CGFloat factor = exp(-dy / 300.0);
+        CGFloat ratio = self.bounds.size.height / self.bounds.size.width;
+        CGFloat newW = self.bounds.size.width * factor;
+        if (newW < 180) newW = 180;
+        if (newW > 430) newW = 430;
+        CGFloat maxWByH = 932.0 / ratio;
+        if (newW > maxWByH) newW = maxWByH;
+        CGFloat newH = newW * ratio;
+        self.bounds = CGRectMake(0, 0, newW, newH);
+        [g setTranslation:CGPointZero inView:self];
     }
 }
 - (void)onPinch:(UIPinchGestureRecognizer *)g {
