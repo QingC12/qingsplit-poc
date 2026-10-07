@@ -211,10 +211,9 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
     }
     if (!fallback) return nil;
     // layer 提取（轨道 A，对齐探针已验证路径 v0.1.6 P3 段）：
-    //   layerManager → layers（多 key 兜底，layers 可能是 NSSet）
-    // 注意：前台 App 的 layer 可能被系统宿主链消费 → layerManager.layers 为空，
-    //       此时走轨道 B（系统容器反向取 contextID，见 poc_find_container_ctx）
+    //   layerManager → layers（多 key 兜底，layers 可能是 NSSet/NSOrderedSet）
     id layer = nil; NSInteger layerCount = 0; NSString *lmCls = @"nil"; NSString *layersKind = @"nil";
+    NSArray *allLayers = nil;
     @try {
         id lm = poc_tryKVC(fallback, @[@"layerManager", @"_layerManager"]);
         lmCls = poc_cls(lm);
@@ -222,20 +221,24 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
         layersKind = layers ? NSStringFromClass([layers class]) : @"nil";
         // v0.1.3: layers 实际是 __NSFrozenOrderedSetM (NSOrderedSet)，不是 NSArray/NSSet！
         // 必须同时支持 NSArray / NSSet / NSOrderedSet
-        NSArray *layerArr = nil;
         if ([layers isKindOfClass:[NSArray class]]) {
-            layerArr = layers;
+            allLayers = layers;
         } else if ([layers isKindOfClass:[NSSet class]]) {
-            layerArr = [layers allObjects];
+            allLayers = [layers allObjects];
         } else if ([layers isKindOfClass:[NSOrderedSet class]]) {
-            layerArr = [layers array];
+            allLayers = [layers array];
         } else if ([layers respondsToSelector:@selector(allObjects)]) {
-            layerArr = [layers allObjects];
+            allLayers = [layers allObjects];
         }
-        if (layerArr.count) {
-            layerCount = layerArr.count;
-            layer = layerArr.firstObject;
+        layerCount = allLayers.count;
+        // v0.1.4: 优先 type==0（主内容层），逐个打日志供诊断
+        for (id l in allLayers) {
+            NSString *t = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
+            NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
+            poc_log(@"LAYER_SCAN type=%@ ctx=%ld cls=%@", t, (long)c, poc_cls(l));
+            if (!layer && [t isEqualToString:@"0"]) layer = l;
         }
+        if (!layer && allLayers.count) layer = allLayers.firstObject;
     } @catch (NSException *e) { }
     NSInteger ctx = 0;
     if (layer) ctx = [poc_tryKVC(layer, @[@"_contextID", @"contextID"]) integerValue];
@@ -492,14 +495,19 @@ static void poc_try_float(void) {
         g_win.windowLevel = 999.0;
         g_win.hidden = NO;
         g_win.userInteractionEnabled = YES;
-        g_win.rootViewController = [[POCController alloc] init];
+        // v0.1.4 可见性诊断：rootVC 视图半透明红色 —— 若用户看到红色覆盖层，
+        //   说明窗口显示正常、问题在 host 内容；若什么都看不到，说明窗口本身未显示
+        POCController *vc = [[POCController alloc] init];
+        vc.view.backgroundColor = [UIColor colorWithRed:1.0 green:0.0 blue:0.0 alpha:0.35];
+        g_win.rootViewController = vc;
         // 3.1 host view 放窗口中央（固定 320×480，第一版无手势）
+        // 加到 rootVC.view（window 子视图层级更可控）
         hv.frame = CGRectMake((g_win.bounds.size.width - 320) / 2.0,
                               (g_win.bounds.size.height - 480) / 2.0,
                               320, 480);
-        [g_win addSubview:hv];
+        [vc.view addSubview:hv];
         g_hostView = hv;
-        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ host=%@",
+        poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ host=%@ bg=RED_DIAG",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(hv));
     } @catch (NSException *e) {
