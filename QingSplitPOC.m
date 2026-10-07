@@ -1817,12 +1817,19 @@ static void poc_setup_edge_trigger(void) {
 }
 
 @implementation POCBootstrap
-+ (void)poc_edge_panned:(UIScreenEdgePanGestureRecognizer *)g {
-    // v0.4.16: 右侧滑动 → 弹出应用选择器（仅右侧中段 y∈[150,750]，避免抢控制中心）
-    if (g.state != UIGestureRecognizerStateBegan) return;
-    CGPoint p = [g locationInView:g.view];
-    if (p.y < 150 || p.y > 750) return;
-    poc_picker_show();
++ (void)poc_edge_panned:(UIPanGestureRecognizer *)g {
+    // v0.4.18: 右缘接收条内左滑 → 弹出应用选择器（UIPan 不依赖边缘识别，命中即接管）
+    if (g.state == UIGestureRecognizerStateChanged) {
+        CGPoint t = [g translationInView:g.view];
+        if (t.x < -30) {   // 明显向左滑动（>30pt）
+            if (g_pickerPanel && !g_pickerPanel.hidden) {   // 面板已显示 → 复位防重复
+                [g setTranslation:CGPointZero inView:g.view];
+                return;
+            }
+            poc_picker_show();
+            [g setTranslation:CGPointZero inView:g.view];
+        }
+    }
 }
 + (void)poc_picker_row:(UIButton *)btn {
     // v0.4.16: 点击应用行 → 选中该 scene 进浮窗
@@ -1834,7 +1841,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.17 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.18 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
