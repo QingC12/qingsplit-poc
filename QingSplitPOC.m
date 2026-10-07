@@ -683,8 +683,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         self.center = c;
         [g setTranslation:CGPointZero inView:self.superview];
     } else if (g.state == UIGestureRecognizerStateEnded) {
-        // v0.4.7: 借鉴 Stheno —— ① 拖动惯性（SwiftUI DragGesture predictedEndLocation 概念）
-        // ② 弹簧吸附动画（SwiftUI spring(response:dampingFraction:) 对应 UIKit UISpringTimingParameters）
+        // v0.4.8: 修复 v0.4.7 半屏吸附 bug（snapped 后窗口宽未改 215 → 右吸半个出屏）
+        // + 吸附阈值 40→25px（不过敏） + 惯性系数 0.18→0.12（减少"过半即吸"错觉）
         CGRect f = self.frame;
         CGFloat nx = f.origin.x, ny = f.origin.y;
         BOOL flung = NO;
@@ -692,8 +692,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         CGFloat speed = (CGFloat)hypot(vel.x, vel.y);
         if (speed > 500.0) {
             flung = YES;
-            nx = nx + vel.x * 0.18;
-            ny = ny + vel.y * 0.18;
+            nx = nx + vel.x * 0.12;
+            ny = ny + vel.y * 0.12;
             // clamp：至少 60px 留在屏内（v0.3.16 拖动约束）
             CGFloat minX = -f.size.width + 60.0, maxX = 430.0 - 60.0;
             CGFloat minY = -f.size.height + 60.0, maxY = 932.0 - 60.0;
@@ -702,18 +702,19 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         }
         // 半屏吸附（基于惯性后的位置）：宽 ≥ 60% 屏宽（258）贴左/右缘 → 215 半屏
         BOOL snapped = NO;
+        CGFloat snapW = f.size.width;
         if (poc_setting_bool(@"halfSnap", YES) && f.size.width >= 258.0) {
-            if (nx < 40) { nx = 0; snapped = YES; }
-            else if ((430 - (nx + f.size.width)) < 40) { nx = 215; snapped = YES; }
+            if (nx < 25) { nx = 0; snapped = YES; snapW = 215; }
+            else if ((430 - (nx + f.size.width)) < 25) { nx = 215; snapped = YES; snapW = 215; }
         }
         // 边缘吸附（v0.3.16）—— v0.4.0 加开关
         if (!snapped && poc_setting_bool(@"edgeSnap", YES)) {
-            if (nx < 40) nx = 0;
-            else if ((430 - (nx + f.size.width)) < 40) nx = 430 - f.size.width;
-            if (ny < 40) ny = 0;
-            else if ((932 - (ny + f.size.height)) < 40) ny = 932 - f.size.height;
+            if (nx < 25) nx = 0;
+            else if ((430 - (nx + f.size.width)) < 25) nx = 430 - f.size.width;
+            if (ny < 25) ny = 0;
+            else if ((932 - (ny + f.size.height)) < 25) ny = 932 - f.size.height;
         }
-        CGRect sf = CGRectMake(nx, ny, f.size.width, f.size.height);
+        CGRect sf = CGRectMake(nx, ny, snapW, f.size.height);
         BOOL moved = (fabs(nx - f.origin.x) > 0.5 || fabs(ny - f.origin.y) > 0.5);
         if (snapped) poc_log(@"HALF_SNAP %@", NSStringFromCGRect(sf));
         else if (moved) poc_log(@"MOVE_END %@ vel=%@ flung=%d", NSStringFromCGRect(sf), NSStringFromCGPoint(vel), flung);
