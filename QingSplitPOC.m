@@ -543,8 +543,8 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
     [super layoutSubviews];
     UIView *cv = self.contentView;
     if (!cv) return;
-    // 内容区内边距 14（边框拖动区，v0.3.1 加宽便于操作）
-    CGRect inner = CGRectInset(self.bounds, 14, 14);
+    // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
+    CGRect inner = CGRectInset(self.bounds, 24, 24);
     CGSize native = self.nativeContentSize;
     if (native.width > 0 && native.height > 0) {
         // v0.3.3: contain 等比 —— host 保持 native bounds，transform 缩放到内容区（内容不拉伸变形，跟随缩放）
@@ -568,10 +568,11 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 }
 // v0.3.1: Pan 限边框起点；Pinch 始终允许（双指中点常落内容区，原判定会误拒）
 // v0.3.3: 判定直接用 inset 内容区（transform 下 contentView.frame 不再等于 inset 区域）
+// v0.3.6: inset 与 layoutSubviews 同步 24px
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
     if (gr == _pan) {
         CGPoint p = [gr locationInView:self];
-        CGRect inner = CGRectInset(self.bounds, 14, 14);
+        CGRect inner = CGRectInset(self.bounds, 24, 24);
         if (CGRectContainsPoint(inner, p)) return NO;
     }
     return YES;

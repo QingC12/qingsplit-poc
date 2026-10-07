@@ -27,7 +27,7 @@ def find_dylib():
 
 PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.3.5_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.3.6_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
