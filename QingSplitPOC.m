@@ -453,10 +453,69 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 
 static UIWindow *g_win = nil;
 static UIView *g_hostView = nil;
-static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，60s 后移除）
+static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，20s 后移除）
+static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene id
+static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host 的 contextID
+
+// v0.1.8: 保持模式 —— 切换应用后 scene layer 可能被系统重建（contextID 漂移），
+// 每 3s 检测：窗口存活 / host 存活 / contextID 变化 → 自动重建 host view
+static void poc_keep_float(void) {
+    @try {
+        BOOL winAlive = NO;
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            if (w == g_win) { winAlive = YES; break; }
+        }
+        BOOL hostAlive = (g_hostView.superview != nil);
+        // 重读目标 scene 当前 layer contextID
+        id newLayer = nil;
+        NSInteger newCtx = 0;
+        for (id sc in poc_all_scenes()) {
+            NSString *sid = poc_scene_id(sc);
+            if (!g_lastSid || ![sid isEqualToString:g_lastSid]) continue;
+            id lm = poc_tryKVC(sc, @[@"layerManager", @"_layerManager"]);
+            id layers = poc_tryKVC(lm, @[@"layers", @"_layers", @"sceneLayers"]);
+            NSArray *arr = nil;
+            if ([layers isKindOfClass:[NSArray class]]) arr = layers;
+            else if ([layers isKindOfClass:[NSSet class]]) arr = [layers allObjects];
+            else if ([layers isKindOfClass:[NSOrderedSet class]]) arr = [layers array];
+            else if ([layers respondsToSelector:@selector(allObjects)]) arr = [layers allObjects];
+            for (id l in arr) {
+                NSString *t = poc_str(poc_tryKVC(l, @[@"_type", @"type"]));
+                NSInteger c = [poc_tryKVC(l, @[@"_contextID", @"contextID"]) integerValue];
+                if (!newLayer && [t isEqualToString:@"0"]) { newLayer = l; newCtx = c; }
+            }
+            if (!newLayer && arr.count) { newLayer = arr.firstObject; newCtx = [poc_tryKVC(newLayer, @[@"_contextID", @"contextID"]) integerValue]; }
+            break;
+        }
+        poc_log(@"KEEP winAlive=%d hostAlive=%d ctx=%ld last=%ld", winAlive, hostAlive,
+                (long)newCtx, (long)g_lastCtx);
+        // contextID 漂移 → 重建 host view（保持浮窗内容跟随 scene layer）
+        if (newCtx > 0 && newCtx != g_lastCtx && newLayer) {
+            poc_log(@"HOST_REFRESH ctx=%ld→%ld", (long)g_lastCtx, (long)newCtx);
+            int path = 0;
+            UIView *nhv = poc_make_host_view(newLayer, newCtx, &path);
+            if (nhv) {
+                nhv.frame = g_hostView.frame;
+                UIView *sup = g_hostView.superview;
+                if (sup) [sup insertSubview:nhv aboveSubview:g_hostView];
+                [g_hostView removeFromSuperview];
+                g_hostView = nhv;
+                g_lastCtx = newCtx;
+                poc_log(@"HOST_REFRESH_OK path=%d", path);
+            } else {
+                poc_log(@"HOST_REFRESH_FAIL path=0");
+            }
+        }
+    } @catch (NSException *e) {
+        poc_log(@"KEEP_EXC %@", e.name);
+    }
+}
 
 static void poc_try_float(void) {
-    if (g_win) return; // 只允许一个浮窗（第一版）
+    if (g_win) {   // v0.1.8: 窗口已建立 → 保持模式
+        poc_keep_float();
+        return;
+    }
 
     // 1. 确定目标
     NSString *wanted = [NSString stringWithContentsOfFile:@"/tmp/qsp_target"
@@ -572,6 +631,8 @@ static void poc_try_float(void) {
 
     // 5. 标记 OK（崩溃闸门复位）
     poc_mark_ok();
+    g_lastSid = [sid copy];
+    g_lastCtx = ctx;
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
     // v0.1.7: 心跳日志验证主线程活性（若 10s/30s TICK 缺失 → 主线程被 host 阻塞）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
@@ -580,8 +641,8 @@ static void poc_try_float(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         poc_log(@"TICK_30S main-thread-alive");
     });
-    // 60s 后自动关闭红色诊断背景（移除 g_diag，浮窗 host 保留）
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    // v0.1.8: 红背景自动关闭缩短到 20s（用户要求减少等待）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         @try {
             if (g_diag) {
                 [g_diag removeFromSuperview];
@@ -606,7 +667,7 @@ static void poc_try_float(void) {
         poc_log(@"BOOTSTRAP_START");
         NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer *tm) {
             poc_try_float();
-            if (g_win) [tm invalidate];
+            // v0.1.8: 窗口建立后不 invalidate —— 每 3s 进入保持模式（contextID 漂移检测）
         }];
         // 兜底：60s 后若仍无目标则停表并记录（不崩溃）
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 65 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
