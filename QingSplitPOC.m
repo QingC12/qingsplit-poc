@@ -1722,14 +1722,28 @@ static void poc_picker_show(void) {
             [g_pickerVC.view addSubview:panel];
         }
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
+        // 应用列表（运行中）—— v0.4.21: 面板高度自适应 + y 对齐触发条（行区域与手指位置重叠，避免松手永远判定未选中）
+        NSArray *apps = poc_running_apps();
+        CGFloat pH = 54 + 50.0 * apps.count + 20;
+        CGFloat panelY = MIN(391, 932 - pH - 20);   // 尽量贴触发条 y=391，行多时上移防超屏
+        if (!panel) {
+            panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, 280, pH)];
+            panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
+            panel.layer.cornerRadius = 20;
+            panel.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
+            panel.clipsToBounds = YES;
+            g_pickerPanel = panel;
+            [g_pickerVC.view addSubview:panel];
+        }
+        panel.frame = CGRectMake(142, panelY, 280, pH);   // 重建布局直接落位（动画在下方统一）
+        [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         // 标题
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, 250, 30)];
         title.text = @"选择要悬浮的应用";
         title.textColor = [UIColor whiteColor];
         title.font = [UIFont boldSystemFontOfSize:17];
         [panel addSubview:title];
-        // 应用列表（运行中）
-        NSArray *apps = poc_running_apps();
+        // 应用行（v0.4.21: 面板高度自适应，行从面板内 y=54 起 50/行）
         CGFloat y = 54;
         NSMutableArray *rows = [NSMutableArray array];
         for (NSDictionary *a in apps) {
@@ -1774,12 +1788,13 @@ static void poc_picker_show(void) {
             y += rowH;
         }
         g_pickerRows = rows;   // v0.4.19: 供跟手高亮
-        panel.frame = CGRectMake(430, 90, 280, 752);
+        // v0.4.21: 滑入动画（从右缘 430 滑到面板位）
+        panel.frame = CGRectMake(430, panelY, 280, pH);
         panel.hidden = NO;
         [UIView animateWithDuration:0.25 animations:^{
-            panel.frame = CGRectMake(430 - 280 - 8, 90, 280, 752);
+            panel.frame = CGRectMake(142, panelY, 280, pH);
         }];
-        poc_log(@"PICKER_SHOW apps=%ld", (long)apps.count);
+        poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f", (long)apps.count, panelY);
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
     }
@@ -1838,13 +1853,18 @@ static void poc_setup_edge_trigger(void) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
         }
-        // 面板内行高亮跟随手指（手指屏幕 y → 面板行；面板 frame=(142,90,280,752)，行从面板内 y=54 起 50/行）
+        // 面板内行高亮跟随手指 —— v0.4.21: 最近行判定（手指 y 不必精确落在行内，高亮最近行作视觉反馈）
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerRows.count) {
             CGRect pf = g_pickerPanel.frame;
             CGFloat rowTop = pf.origin.y + 54;
+            CGFloat rowBot = rowTop + 50.0 * g_pickerRows.count;
             NSInteger idx = -1;
-            if (p.y >= rowTop) idx = (NSInteger)((p.y - rowTop) / 50.0);
-            if (idx < 0 || idx >= (NSInteger)g_pickerRows.count) idx = -1;
+            if (p.y >= rowTop && p.y <= rowBot) {
+                CGFloat frac = (p.y - rowTop) / 50.0;
+                idx = (NSInteger)lround(frac);
+                if (idx < 0) idx = 0;
+                if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
+            }
             for (NSUInteger i = 0; i < g_pickerRows.count; i++) {
                 UIView *row = g_pickerRows[i];
                 row.backgroundColor = (i == (NSUInteger)idx) ? [UIColor colorWithWhite:1.0 alpha:0.18]
@@ -1856,14 +1876,21 @@ static void poc_setup_edge_trigger(void) {
         if (g_pickerPanel && !g_pickerPanel.hidden) {
             CGRect pf = g_pickerPanel.frame;
             CGFloat rowTop = pf.origin.y + 54;
+            CGFloat rowBot = rowTop + 50.0 * g_pickerRows.count;
             NSInteger idx = -1;
-            if (p.y >= rowTop) idx = (NSInteger)((p.y - rowTop) / 50.0);
-            if (idx >= 0 && idx < (NSInteger)g_pickerRows.count) {
+            // v0.4.21: 手指在行区域（±10pt 容差）内 → 选最近行；否则未选中关闭
+            if (p.y >= rowTop - 10 && p.y <= rowBot + 10) {
+                CGFloat frac = (p.y - rowTop) / 50.0;
+                idx = (NSInteger)lround(frac);
+                if (idx < 0) idx = 0;
+                if (idx >= (NSInteger)g_pickerRows.count) idx = (NSInteger)g_pickerRows.count - 1;
+            }
+            if (idx >= 0) {
                 NSArray *apps = poc_running_apps();
                 if (idx < (NSInteger)apps.count) {
-                    poc_picker_select(apps[idx][@"sid"]);   // 松手停在某 App → 浮窗打开
+                    poc_picker_select(apps[idx][@"sid"]);   // 松手停在某 App 附近 → 浮窗打开
                 } else {
-                    poc_picker_hide();                      // 行越界 → 关闭不动作
+                    poc_picker_hide();
                 }
             } else {
                 poc_picker_hide();                           // 没停在任何 App → 自动关闭
@@ -1881,7 +1908,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.20 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.21 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
