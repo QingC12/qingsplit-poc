@@ -600,8 +600,8 @@ static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义�
         return YES;
     }
     if (gr == _pan) {
-        // v0.3.12: 只有底部 40px 横条可拖动（用户要求：底部移动悬浮窗）
-        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 40, self.bounds.size.width, 40);
+        // v0.3.12: 只有底部横条可拖动；v0.3.13: 加高 40→56px（用户实测 40px 不灵敏，底部滑动带不动）
+        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 56, self.bounds.size.width, 56);
         if (!CGRectContainsPoint(bottomBar, p)) return NO;
         // 角落区归 scalePan（避免竞争）
         CGRect bl = CGRectMake(0, self.bounds.size.height - 60, 60, 60);
@@ -672,18 +672,36 @@ static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host �
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
 static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 的 SB 呈现容器（隐藏后露出桌面）
 
-// v0.3.12: 浮窗状态记忆（位置/尺寸持久化到 Preferences plist）
-static NSString *poc_state_path(void) {
-    return @"/var/jb/var/mobile/Library/Preferences/com.qingsplit.poc.plist";
+// v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
+// v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
+// （rootless fake root 下 /var/jb/var/mobile 可能不可写），日志记录成功路径；读时同样多路径回退
+static NSArray *poc_state_paths(void) {
+    return @[
+        @"/var/jb/var/mobile/Library/Preferences/com.qingsplit.poc.plist",
+        @"/var/mobile/Library/Preferences/com.qingsplit.poc.plist",
+        @"/var/mobile/Documents/com.qingsplit.poc.plist",
+        @"/tmp/qsp_state.plist",
+    ];
 }
 static void poc_save_float_state(CGRect f) {
     @try {
         NSDictionary *d = @{@"ox": @(f.origin.x), @"oy": @(f.origin.y),
                             @"w": @(f.size.width), @"h": @(f.size.height)};
-        if ([d writeToFile:poc_state_path() atomically:YES]) {
-            poc_log(@"STATE_SAVE %@", NSStringFromCGRect(f));
-        } else {
-            poc_log(@"STATE_SAVE_FAIL %@", NSStringFromCGRect(f));
+        BOOL saved = NO;
+        for (NSString *p in poc_state_paths()) {
+            if ([d writeToFile:p atomically:YES]) {
+                saved = YES;
+                poc_log(@"STATE_SAVE %@ %@", NSStringFromCGRect(f), p);
+                break;
+            }
+        }
+        if (!saved) {
+            NSString *dir = @"/var/jb/var/mobile/Library/Preferences";
+            BOOL dirExists = [[NSFileManager defaultManager] fileExistsAtPath:dir];
+            BOOL dirWritable = [[NSFileManager defaultManager] isWritableFileAtPath:dir];
+            BOOL tmpWritable = [[NSFileManager defaultManager] isWritableFileAtPath:@"/tmp"];
+            poc_log(@"STATE_SAVE_FAIL all paths %@ dir=%@ writable=%d tmp=%d",
+                    NSStringFromCGRect(f), dirExists ? @"yes" : @"no", dirWritable, tmpWritable);
         }
     } @catch (NSException *e) {
         poc_log(@"STATE_SAVE_EXC %@", e.name);
@@ -692,17 +710,19 @@ static void poc_save_float_state(CGRect f) {
 static CGRect poc_load_float_state(void) {
     CGRect d = CGRectMake((430.0 - 340.0) / 2.0, (932.0 - 500.0) / 2.0, 340, 500);
     @try {
-        NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:poc_state_path()];
-        if (d2) {
+        for (NSString *p in poc_state_paths()) {
+            NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:p];
+            if (!d2) continue;
             CGFloat ox = [d2[@"ox"] doubleValue], oy = [d2[@"oy"] doubleValue];
             CGFloat w = [d2[@"w"] doubleValue], h = [d2[@"h"] doubleValue];
             if (w >= 180 && w <= 430 && h >= 180 && h <= 932) {
                 ox = MAX(0, MIN(ox, 430.0 - w));
                 oy = MAX(0, MIN(oy, 932.0 - h));
                 d = CGRectMake(ox, oy, w, h);
+                poc_log(@"STATE_LOAD %@ %@", NSStringFromCGRect(d), p);
+                break;
             }
         }
-        poc_log(@"STATE_LOAD %@", NSStringFromCGRect(d));
     } @catch (NSException *e) {
         poc_log(@"STATE_LOAD_EXC %@", e.name);
     }
@@ -712,9 +732,12 @@ static CGRect poc_load_float_state(void) {
 // v0.3.12: 主屏回退 —— 在 SB 视图树中找目标 scene 的呈现容器（_UISceneLayerHostContainerView）
 // 链（探针 v0.1.2/0.1.3 已验证）：容器 → _dataSource(_UIScenePresentationView) → presenter → owner → scene
 // 也尝试容器直持 _scene（探针注释：容器持有 _scene + _presentationContext + _dataSource）
-static UIView *poc_search_sb_container(UIView *v, NSString *sid, int depth) {
-    if (!v || depth > 16) return nil;
-    if ([poc_cls(v) isEqualToString:@"_UISceneLayerHostContainerView"]) {
+// v0.3.13 增强：真机 SCREEN_HIDE_NOTFOUND —— 诊断窗口/容器数量 + 打印每个容器可解析的 sceneID
+// + 兜底隐藏 _UIScenePresentationView（presenter 呈现视图，容器父级）
+static UIView *poc_search_sb_container(UIView *v, NSString *sid, int depth, BOOL *matched) {
+    if (!v || depth > 20) return nil;
+    if ([poc_cls(v) isEqualToString:@"_UISceneLayerHostContainerView"] ||
+        [poc_cls(v) isEqualToString:@"_UIScenePresentationView"]) {
         @try {
             NSString *scid = nil;
             id scene = poc_tryKVC(v, @[@"_scene", @"scene"]);
@@ -726,18 +749,38 @@ static UIView *poc_search_sb_container(UIView *v, NSString *sid, int depth) {
                 id sc2 = owner ? poc_tryKVC(owner, @[@"scene"]) : nil;
                 if (sc2) scid = poc_scene_id(sc2);
             }
-            if (scid && [scid isEqualToString:sid]) return v;
+            if (!scid) {
+                // 兜底：presenter → scene 直连
+                id pres = poc_tryKVC(v, @[@"presenter", @"_presenter"]);
+                if (pres) {
+                    id sc3 = poc_tryKVC(pres, @[@"scene"]);
+                    if (sc3) scid = poc_scene_id(sc3);
+                }
+            }
+            if (scid) {
+                // v0.3.13 诊断：记录该容器归属的 scene（同场景只记一次）
+                static NSMutableSet *g_seen = nil;
+                if (!g_seen) g_seen = [NSMutableSet set];
+                if (![g_seen containsObject:scid]) {
+                    [g_seen addObject:scid];
+                    poc_log(@"SB_CONTAINER cls=%@ scene=%@", poc_cls(v), scid);
+                }
+                if (scid && sid && [scid isEqualToString:sid]) { *matched = YES; return v; }
+            }
         } @catch (NSException *e) { }
     }
     for (UIView *sub in v.subviews) {
-        UIView *r = poc_search_sb_container(sub, sid, depth + 1);
+        UIView *r = poc_search_sb_container(sub, sid, depth + 1, matched);
         if (r) return r;
     }
     return nil;
 }
 static UIView *poc_find_sb_container(NSString *sid) {
-    for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
-        UIView *r = poc_search_sb_container(w, sid, 0);
+    NSArray *ws = [[UIApplication sharedApplication] windows];
+    poc_log(@"SB_WINDOW_COUNT %lu", (unsigned long)ws.count);
+    BOOL matched = NO;
+    for (UIWindow *w in ws) {
+        UIView *r = poc_search_sb_container(w, sid, 0, &matched);
         if (r) return r;
     }
     return nil;
