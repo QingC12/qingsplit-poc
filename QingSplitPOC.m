@@ -495,9 +495,11 @@ static void poc_keep_float(void) {
         // 重读目标 scene 当前 layer contextID
         id newLayer = nil;
         NSInteger newCtx = 0;
+        id targetScene = nil;   // v0.2.0: 循环外保存目标 scene
         for (id sc in poc_all_scenes()) {
             NSString *sid = poc_scene_id(sc);
             if (!g_lastSid || ![sid isEqualToString:g_lastSid]) continue;
+            targetScene = sc;
             id lm = poc_tryKVC(sc, @[@"layerManager", @"_layerManager"]);
             id layers = poc_tryKVC(lm, @[@"layers", @"_layers", @"sceneLayers"]);
             NSArray *arr = nil;
@@ -514,11 +516,11 @@ static void poc_keep_float(void) {
             break;
         }
         // v0.2.0: 记录 activationState 序列（切走后降到几是关键证据）
-        NSNumber *act = poc_tryKVC(sc, @[@"activationState", @"_activationState"]);
+        NSNumber *act = poc_tryKVC(targetScene, @[@"activationState", @"_activationState"]);
         poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld", winAlive, hostAlive,
                 act ?: @"nil", (long)newCtx, (long)g_lastCtx);
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
-        if (newCtx == 0) poc_probe_scene_apis(sc);
+        if (newCtx == 0) poc_probe_scene_apis(targetScene);
         // contextID 漂移 → 重建 host view（保持浮窗内容跟随 scene layer）
         if (newCtx > 0 && newCtx != g_lastCtx && newLayer) {
             poc_log(@"HOST_REFRESH ctx=%ld→%ld", (long)g_lastCtx, (long)newCtx);
