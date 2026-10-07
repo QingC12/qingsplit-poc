@@ -185,6 +185,16 @@ static NSString *poc_scene_id(id scene) {
     return v ? [NSString stringWithFormat:@"%@", v] : @"nil";
 }
 
+// v0.3.18: 目标 scene 是否仍存在（用于关闭后复位 —— app 退出则 scene 从 workspace 消失）
+static BOOL poc_scene_alive(NSString *sid) {
+    if (!sid) return NO;
+    for (id sc in poc_all_scenes()) {
+        NSString *s = poc_scene_id(sc);
+        if (s && [s isEqualToString:sid]) return YES;
+    }
+    return NO;
+}
+
 // v0.3.4: 读取 FBSceneLayer 的原始尺寸（native）—— 多 key + selector 直调 + 屏幕兜底
 // v0.3.3 实锤：KVC valueForKey:@"frame" 返回 CGRectZero（key/时机问题），native 拿不到 → contain 失效
 static CGSize poc_layer_native_size(id layer) {
@@ -722,6 +732,7 @@ static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图�
 static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene id
 static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host 的 contextID
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
+static BOOL g_floatClosed = NO;   // v0.3.18: 用户点击关闭后保持关闭（防止 1s tick 自动重建）；目标 scene 消失后复位
 static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 的 SB 呈现容器（隐藏后露出桌面）
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
@@ -883,9 +894,10 @@ static void poc_close_float(void) {
         g_container = nil;
         g_hostView = nil;
         g_diag = nil;
-        g_lastSid = nil;               // 允许重新选目标（app 重开 → 重新建窗）
+        g_floatClosed = YES;           // v0.3.18: 保持关闭 —— 不自动重建；目标 scene 消失后才复位
+        // v0.3.18: g_lastSid 保留（用于判断目标 scene 何时消失）；g_lastCtx 归零
         g_lastCtx = 0;
-        poc_log(@"FLOAT_CLOSED — scene untouched, window removed, re-open will HOST_REFRESH");
+        poc_log(@"FLOAT_CLOSED — scene untouched, window removed, stay closed until target app exits");
     } @catch (NSException *e) {
         poc_log(@"FLOAT_CLOSE_EXC %@", e.name);
     }
@@ -1145,6 +1157,16 @@ static void poc_try_float(void) {
     NSString *sid = target[@"sid"];
     id scene = target[@"scene"];
     id layer = [target[@"layer"] isKindOfClass:[NSNull class]] ? nil : target[@"layer"];
+    // v0.3.18: 关闭后保持关闭 —— 用户点 × 后浮窗不应 1s 后自动重建。
+    // 仅当目标 app 的 scene 真正消失（app 退出）后复位，下次打开该 app 才重建浮窗。
+    if (g_floatClosed) {
+        if (g_lastSid && !poc_scene_alive(g_lastSid)) {
+            g_floatClosed = NO;
+            g_lastSid = nil;
+            poc_log(@"FLOAT_REOPEN_ARMED — target scene gone, next launch will re-float");
+        }
+        return;
+    }
     NSInteger ctx = [target[@"ctx"] integerValue];
     NSInteger pid = [target[@"pid"] integerValue];
     NSInteger layerCount = [target[@"layerCount"] integerValue];
