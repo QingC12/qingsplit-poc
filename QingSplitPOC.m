@@ -572,8 +572,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         [_contentView removeFromSuperview];
         _contentView = cv;
         if (cv) {
-            // v0.4.16: 内容视图同步圆角裁剪（悬浮窗四角圆润，内容不再盖成方形）
-            cv.layer.cornerRadius = 20;
+            // v0.4.25: 圆角 40（内容视图同步裁剪）
+            cv.layer.cornerRadius = 40;
             cv.layer.masksToBounds = YES;
             [self addSubview:cv];
         }
@@ -586,7 +586,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (self) {
         // v0.3.11: 去除手势区灰色背景（用户要求）——容器背景透明，只留白色边框线 + 角落把手
         self.backgroundColor = [UIColor clearColor];
-        self.layer.cornerRadius = 20;   // v0.4.16: 圆角化四角（内容视图同步裁剪）
+        self.layer.cornerRadius = 40;   // v0.4.25: 圆角 40（居中/吸附/拖动统一）
         self.layer.borderWidth = 0;   // v0.4.15: 去白框 —— 手势指引（横条/竖条/图标）已足够
         self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
         self.clipsToBounds = YES;
@@ -1031,6 +1031,7 @@ static UIWindow *g_triggerWin = nil;
 static UIView *g_pickerPanel = nil;      // v0.4.16: 应用选择器面板（右侧滑入）
 static NSArray *g_pickerRows = nil;      // v0.4.19: 选择器行视图（跟手高亮）
 static CGFloat g_pickerRowH = 50;       // v0.4.22: 自适应行高（铺满触发条 150pt）
+static UIScrollView *g_pickerScroll = nil;   // v0.4.25: 选择器滚动列表（全部应用）
 static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene id（前缀匹配）
 static BOOL g_triggerArmed = NO;
 static BOOL g_launchPending = NO;        // v0.4.24: 已选择未运行应用 → 启动后等待 scene 出现
@@ -1810,17 +1811,14 @@ static void poc_picker_show(void) {
             g_triggerWin.rootViewController = vc;
             g_pickerVC = vc;
         }
-        // 面板 —— v0.4.22: 宽度 220，高度/位置自适应：行高铺满触发条(150pt)，行区对齐触发条 y=391
+        // 面板 —— v0.4.25: 固定 220 宽、可见 6 行（300pt 滚动区），全部应用可滚动浏览；圆角 20 面板
         UIView *panel = g_pickerPanel;
-        NSArray *appsAll = poc_all_apps();                // v0.4.24: 运行中 + 已安装
-        NSArray *apps = appsAll;
-        if (apps.count > 12) apps = [apps subarrayWithRange:NSMakeRange(0, 12)];   // 面板不超屏
+        NSArray *apps = poc_all_apps();                    // v0.4.24: 运行中 + 全部已安装
         NSUInteger n = apps.count ? apps.count : 1;
-        CGFloat rowH = (n <= 3) ? (150.0 / n) : 50.0;         // 行高：1 行=150 铺满红线，2=75，3=50，多则 50
-        if (rowH < 44) rowH = 44;
+        const CGFloat rowH = 50.0;                          // v0.4.25: 滚动模式固定行高
         g_pickerRowH = rowH;
-        CGFloat pH = 54 + rowH * n + 20;
-        CGFloat panelY = MIN(337, 932 - pH - 20);             // 行区起点=panelY+54=391 → 与触发条顶对齐
+        const CGFloat pH = 54 + 300 + 20;                   // 标题 + 可见 6 行 + padding
+        const CGFloat panelY = MIN(337, 932 - pH - 20);     // 滚动区顶部=panelY+54=391 对齐触发条
         if (!panel) {
             panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, 220, pH)];
             panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
@@ -1831,32 +1829,45 @@ static void poc_picker_show(void) {
             [g_pickerVC.view addSubview:panel];
         }
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
+        g_pickerScroll = nil;
         // 标题
         UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 12, 190, 30)];
         title.text = @"选择要悬浮的应用";
         title.textColor = [UIColor whiteColor];
         title.font = [UIFont boldSystemFontOfSize:15];
         [panel addSubview:title];
-        // 应用行 —— v0.4.22: 行高自适应(铺满触发条) + 应用图标(LSApplicationProxy→UIImage 私有，失败仅文本)
-        CGFloat y = 54;
+        // 滚动列表（全部应用）
+        UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, 54, 220, 300)];
+        scroll.contentSize = CGSizeMake(220, rowH * n);
+        scroll.showsVerticalScrollIndicator = NO;
+        scroll.backgroundColor = [UIColor clearColor];
+        g_pickerScroll = scroll;
+        [panel addSubview:scroll];
+        // 应用行 —— v0.4.25: 图标三级（LSApplicationProxy → SBIconController → 首字母色块兜底）
+        CGFloat y = 0;
         NSMutableArray *rows = [NSMutableArray array];
         NSUInteger iconsShown = 0;
         for (NSDictionary *a in apps) {
             UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 220, rowH)];
             row.tag = 0;
             row.backgroundColor = [UIColor clearColor];   // v0.4.19: 默认透明，跟手高亮时改色
-            // 图标/名称：1) LSApplicationProxy iconDataForVariant: 2) UIImage 私有 3) 仅文本（名称用 localizedName 优于 bundle id）
-            UIImage *icon = nil;
+            // 名称
             NSString *appName = nil;
             @try {
                 id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
                 if (proxy) {
                     id nm = [proxy performSelector:@selector(localizedName)];
                     if ([nm isKindOfClass:[NSString class]] && [(NSString *)nm length]) appName = nm;
-                    // 变体1：iconDataForVariant:@"2x"（iOS15+）
+                }
+            } @catch (NSException *e) { }
+            NSString *dispName = appName.length ? appName : (a[@"name"] ?: a[@"bundle"]);
+            // 图标
+            UIImage *icon = nil;
+            @try {
+                id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
+                if (proxy) {
                     NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
                     if (!([d isKindOfClass:[NSData class]] && d.length)) {
-                        // 变体2：iconDataForVariant:scale:（带 scale 双参）
                         SEL s2 = sel_registerName("iconDataForVariant:scale:");
                         if ([proxy respondsToSelector:s2]) {
                             NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
@@ -1868,10 +1879,17 @@ static void poc_picker_show(void) {
             } @catch (NSException *e) { icon = nil; }
             if (!icon) {
                 @try {
-                    SEL s = sel_registerName("_applicationIconImageForBundleIdentifier:");
-                    if ([[UIImage class] respondsToSelector:s]) {
-                        id (*fn)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
-                        icon = fn([UIImage class], s, a[@"bundle"]);
+                    // v0.4.25: SBIconController 链路（SpringBoard 图标权威来源）
+                    id iconCtrl = [NSClassFromString(@"SBIconController") performSelector:@selector(sharedInstance)];
+                    id model = [iconCtrl performSelector:@selector(model)];
+                    id iconObj = [model performSelector:@selector(expectedIconForDisplayIdentifier:) withObject:a[@"bundle"]];
+                    if (iconObj) {
+                        SEL fs = sel_registerName("generateIconImageWithFormat:");
+                        if ([iconObj respondsToSelector:fs]) {
+                            UIImage *(*fn)(id, SEL, NSInteger) = (UIImage *(*)(id, SEL, NSInteger))objc_msgSend;
+                            UIImage *im = fn(iconObj, fs, 0);
+                            if ([im isKindOfClass:[UIImage class]]) icon = im;
+                        }
                     }
                 } @catch (NSException *e) { }
             }
@@ -1880,12 +1898,28 @@ static void poc_picker_show(void) {
             if (icon) {
                 UIImageView *iv = [[UIImageView alloc] initWithImage:icon];
                 iv.frame = CGRectMake(0, (rowH - 36) / 2.0, 36, 36);
-                iv.layer.cornerRadius = 7;
+                iv.layer.cornerRadius = 9;
                 iv.clipsToBounds = YES;
                 [txtWrap addSubview:iv];
+            } else {
+                // v0.4.25: 首字母彩色色块兜底（100% 成功，不再裸文本）
+                UIView *block = [[UIView alloc] initWithFrame:CGRectMake(0, (rowH - 36) / 2.0, 36, 36)];
+                block.layer.cornerRadius = 9;
+                block.clipsToBounds = YES;
+                NSUInteger hsh = [dispName hash];
+                block.backgroundColor = [UIColor colorWithHue:((hsh % 360) / 360.0) saturation:0.5 brightness:0.72 alpha:1.0];
+                UILabel *ch = [[UILabel alloc] initWithFrame:block.bounds];
+                NSString *first = dispName.length ? [dispName substringToIndex:1] : @"?";
+                first = [first uppercaseString];
+                ch.text = first;
+                ch.textColor = [UIColor whiteColor];
+                ch.font = [UIFont boldSystemFontOfSize:17];
+                ch.textAlignment = NSTextAlignmentCenter;
+                [block addSubview:ch];
+                [txtWrap addSubview:block];
             }
-            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(icon ? 46 : 0, (rowH - 18) / 2.0, 150, 18)];
-            lbl.text = appName.length ? appName : (a[@"name"] ?: a[@"bundle"]);   // v0.4.24: 未运行应用用 localizedName
+            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(46, (rowH - 18) / 2.0, 150, 18)];
+            lbl.text = dispName;
             lbl.textColor = [UIColor whiteColor];
             lbl.font = [UIFont systemFontOfSize:14];
             lbl.adjustsFontSizeToFitWidth = YES;
@@ -1898,17 +1932,18 @@ static void poc_picker_show(void) {
             bt.tag = 1000 + (NSInteger)(y / rowH);
             [bt addTarget:[POCBootstrap class] action:@selector(poc_picker_row:) forControlEvents:UIControlEventTouchUpInside];
             [row addSubview:bt];
-            [panel addSubview:row];
+            [scroll addSubview:row];
             [rows addObject:row];
             y += rowH;
         }
         g_pickerRows = rows;   // v0.4.19: 供跟手高亮
-        // 滑入动画（从右缘滑到面板位 202=430-220-8）
+        // 滑入动画（spring，Stheno 风格）
         panel.frame = CGRectMake(430, panelY, 220, pH);
         panel.hidden = NO;
-        [UIView animateWithDuration:0.25 animations:^{
+        [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.82 initialSpringVelocity:0.4
+                            options:UIViewAnimationOptionCurveEaseOut animations:^{
             panel.frame = CGRectMake(202, panelY, 220, pH);
-        }];
+        } completion:nil];
         poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f rowH=%.0f icons=%lu", (long)apps.count, panelY, rowH, (unsigned long)iconsShown);
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
@@ -1968,10 +2003,11 @@ static void poc_setup_edge_trigger(void) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
         }
-        // 面板内行高亮跟随手指 —— v0.4.21: 最近行判定（手指 y 不必精确落在行内，高亮最近行作视觉反馈）；v0.4.22: 行高用 g_pickerRowH
+        // 面板内行高亮跟随手指 —— v0.4.21: 最近行判定；v0.4.25: 换算滚动偏移（内容 y = 手指屏幕 y - 行区顶 + offset）
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerRows.count) {
             CGRect pf = g_pickerPanel.frame;
-            CGFloat rowTop = pf.origin.y + 54;
+            CGFloat off = g_pickerScroll ? g_pickerScroll.contentOffset.y : 0;
+            CGFloat rowTop = pf.origin.y + 54 - off;
             CGFloat rowBot = rowTop + g_pickerRowH * g_pickerRows.count;
             NSInteger idx = -1;
             if (p.y >= rowTop && p.y <= rowBot) {
@@ -1992,7 +2028,8 @@ static void poc_setup_edge_trigger(void) {
             CGPoint t = [g translationInView:g.view];
             if (t.x > 30) { poc_picker_hide(); return; }   // v0.4.22: 向右回滑 → 取消
             CGRect pf = g_pickerPanel.frame;
-            CGFloat rowTop = pf.origin.y + 54;
+            CGFloat off = g_pickerScroll ? g_pickerScroll.contentOffset.y : 0;
+            CGFloat rowTop = pf.origin.y + 54 - off;
             CGFloat rowBot = rowTop + g_pickerRowH * g_pickerRows.count;
             NSInteger idx = -1;
             // v0.4.21: 手指在行区域（±10pt 容差）内 → 选最近行；否则未选中关闭
@@ -2025,7 +2062,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.24 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.25 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
