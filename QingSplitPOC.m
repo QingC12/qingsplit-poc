@@ -1692,9 +1692,9 @@ static void poc_create_trigger_button(void) {
         [g_triggerBtn setTitle:@"浮" forState:UIControlStateNormal];
         [g_triggerBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
         g_triggerBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-        [g_triggerBtn addTarget:self action:@selector(poc_trigger_tapped) forControlEvents:UIControlEventTouchUpInside];
+        [g_triggerBtn addTarget:[POCBootstrap class] action:@selector(poc_trigger_tapped) forControlEvents:UIControlEventTouchUpInside];
         // 可拖动（记忆位置到状态 plist）
-        UIPanGestureRecognizer *tgPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(poc_trigger_panned:)];
+        UIPanGestureRecognizer *tgPan = [[UIPanGestureRecognizer alloc] initWithTarget:[POCBootstrap class] action:@selector(poc_trigger_panned:)];
         [g_triggerBtn addGestureRecognizer:tgPan];
         [vc.view addSubview:g_triggerBtn];
         g_triggerWin.hidden = NO;
