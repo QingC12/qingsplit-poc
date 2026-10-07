@@ -547,6 +547,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     UIView *_knobL, *_knobR;   // v0.4.10: 角落把手引用（吸附改宽后强制重定位，防跑出窗口）
     UIButton *_closeBtn;       // v0.4.10: 关闭按钮引用
     UITapGestureRecognizer *_doubleTap;   // v0.4.13: 双击顶部条重置窗口尺寸（细长条无法操作时恢复）
+    UIView *_gripTop, *_gripBottom, *_gripLeft, *_gripRight;   // v0.4.14: 手势可视指示
+    UILabel *_resetBadge;      // v0.4.14: 顶部双击重置图标（↻）
 }
 // v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
 - (void)setContentView:(UIView *)cv {
@@ -592,8 +594,46 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         [self addCornerKnob:CGRectMake(self.bounds.size.width - 32, self.bounds.size.height - 32, 20, 20)];
         // v0.3.16: 右上角关闭按钮（明确关闭机制，仅移除浮窗不动 Scene）
         [self addCloseButton];
+        // v0.4.14: 全部手势可视指示（拖动/重置），风格与把手/关闭一致（白色半透明圆角，不拦截触摸）
+        [self addGestureIndicators];
     }
     return self;
+}
+// v0.4.14: 手势可视指示 —— 顶部=拖动横条+↻重置图标，底部=拖动横条，左右边缘=竖条
+- (void)addGestureIndicators {
+    UIColor *c = [UIColor colorWithWhite:1.0 alpha:0.65];
+    CGFloat radius = 2.5;
+    // 顶部条：拖动横条（居中）+ 重置图标（右侧避开关闭按钮）
+    _gripTop = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 32, 5)];
+    _gripTop.backgroundColor = c;
+    _gripTop.layer.cornerRadius = radius;
+    _gripTop.userInteractionEnabled = NO;
+    [self addSubview:_gripTop];
+    _resetBadge = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 24, 24)];
+    _resetBadge.text = @"↻";
+    _resetBadge.textColor = c;
+    _resetBadge.font = [UIFont boldSystemFontOfSize:14];
+    _resetBadge.textAlignment = NSTextAlignmentCenter;
+    _resetBadge.userInteractionEnabled = NO;
+    [self addSubview:_resetBadge];
+    // 底部条：拖动横条（居中，稍粗）
+    _gripBottom = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 56, 6)];
+    _gripBottom.backgroundColor = c;
+    _gripBottom.layer.cornerRadius = 3;
+    _gripBottom.userInteractionEnabled = NO;
+    [self addSubview:_gripBottom];
+    // 左右边缘：竖条（垂直居中）
+    _gripLeft = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 5, 36)];
+    _gripLeft.backgroundColor = c;
+    _gripLeft.layer.cornerRadius = radius;
+    _gripLeft.userInteractionEnabled = NO;
+    [self addSubview:_gripLeft];
+    _gripRight = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 5, 36)];
+    _gripRight.backgroundColor = c;
+    _gripRight.layer.cornerRadius = radius;
+    _gripRight.userInteractionEnabled = NO;
+    [self addSubview:_gripRight];
+    [self setNeedsLayout];
 }
 // v0.3.16: 关闭按钮 —— 右上角 44×44 热区 + 白圆 × 视觉。点击 → 只移除浮窗（不杀 Scene）
 - (void)addCloseButton {
@@ -640,6 +680,12 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (_knobL) _knobL.frame = CGRectMake(12, b.size.height - 32, 20, 20);
     if (_knobR) _knobR.frame = CGRectMake(b.size.width - 32, b.size.height - 32, 20, 20);
     if (_closeBtn) _closeBtn.frame = CGRectMake(b.size.width - 44, 0, 44, 44);
+    // v0.4.14: 手势指示跟随 bounds
+    if (_gripTop) _gripTop.frame = CGRectMake((b.size.width - 32) / 2.0, 19, 32, 5);
+    if (_resetBadge) _resetBadge.frame = CGRectMake(b.size.width - 66, 2, 24, 24);
+    if (_gripBottom) _gripBottom.frame = CGRectMake((b.size.width - 56) / 2.0, b.size.height - 40, 56, 6);
+    if (_gripLeft) _gripLeft.frame = CGRectMake(5, (b.size.height - 36) / 2.0, 5, 36);
+    if (_gripRight) _gripRight.frame = CGRectMake(b.size.width - 10, (b.size.height - 36) / 2.0, 5, 36);
     UIView *cv = self.contentView;
     if (!cv) return;
     // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
@@ -768,7 +814,18 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             if (ny < 25) ny = 0;
             else if ((932 - (ny + f.size.height)) < 25) ny = 932 - f.size.height;
         }
-        CGRect sf = CGRectMake(nx, ny, snapW, f.size.height);
+        // v0.4.14: 半屏吸附高度按内容比例归一 + 垂直居中（防细长条 + fill 裁切只显示局部）
+        CGFloat snapH = f.size.height;
+        if (snapped) {
+            CGFloat nw = self.nativeContentSize.width, nh = self.nativeContentSize.height;
+            if (nw > 0 && nh > 0) {
+                snapH = 215.0 * (nh / nw);
+                if (snapH > 932) snapH = 932;
+                if (snapH < 240) snapH = 240;
+            }
+            ny = (932.0 - snapH) / 2.0;
+        }
+        CGRect sf = CGRectMake(nx, ny, snapW, snapH);
         if (snapped) {
             _preSnapFrame = f;   // v0.4.9: 记录吸附前尺寸（拖离还原）
             _halfSnapped = YES;
@@ -863,7 +920,18 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             if (ny < 25) ny = 0;
             else if ((932 - (ny + f.size.height)) < 25) ny = 932 - f.size.height;
         }
-        CGRect sf = CGRectMake(nx, ny, snapW, f.size.height);
+        // v0.4.14: 半屏吸附高度按内容比例归一 + 垂直居中（防细长条 + fill 裁切只显示局部）
+        CGFloat snapH = f.size.height;
+        if (snapped) {
+            CGFloat nw = self.nativeContentSize.width, nh = self.nativeContentSize.height;
+            if (nw > 0 && nh > 0) {
+                snapH = 215.0 * (nh / nw);
+                if (snapH > 932) snapH = 932;
+                if (snapH < 240) snapH = 240;
+            }
+            ny = (932.0 - snapH) / 2.0;
+        }
+        CGRect sf = CGRectMake(nx, ny, snapW, snapH);
         BOOL moved = (fabs(nx - f.origin.x) > 0.5 || fabs(ny - f.origin.y) > 0.5);
         if (snapped) {
             // v0.4.9: 记录吸附前尺寸（拖离时还原）
@@ -997,7 +1065,9 @@ static CGRect poc_load_float_state(void) {
             if (!d2) continue;
             CGFloat ox = [d2[@"ox"] doubleValue], oy = [d2[@"oy"] doubleValue];
             CGFloat w = [d2[@"w"] doubleValue], h = [d2[@"h"] doubleValue];
-            if (w >= 180 && w <= 430 && h >= 180 && h <= 932) {
+            // v0.4.14: 校验 —— 细长条记忆（宽<240 或 高宽比>3.2）丢弃，用默认（防吸附变长条+内容局部）
+            BOOL sane = (w >= 240 && w <= 430 && h >= 240 && h <= 932 && (h / w) <= 3.2);
+            if (sane) {
                 ox = MAX(0, MIN(ox, 430.0 - w));
                 oy = MAX(0, MIN(oy, 932.0 - h));
                 d = CGRectMake(ox, oy, w, h);
@@ -1570,7 +1640,7 @@ static void poc_try_float(void) {
 @implementation POCBootstrap
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.13 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.14 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
