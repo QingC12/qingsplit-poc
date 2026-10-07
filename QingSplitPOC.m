@@ -556,8 +556,10 @@ static void poc_keep_float(void) {
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
         if (newCtx == 0) {
             poc_probe_scene_apis(targetScene);
-            // v0.2.1: B 方案最小写 —— 空窗期 activate 拉回 scene（节流 6s）
-            poc_scene_keepalive(targetScene, g_lastCtx);
+            // v0.2.1: B 方案最小写 —— activateWithTransitionContext: 拉回 scene
+            // v0.2.2: 已禁用！真机实锤：裸 FBSSceneTransitionContext 触发 SB 崩溃（安全模式）。
+            //         保持只读，切换保留列为专项（需逆向 context 内部结构或 hook scene 生命周期）。
+            // poc_scene_keepalive(targetScene, g_lastCtx);
         }
         // contextID 漂移 → 重建 host view（保持浮窗内容跟随 scene layer）
         if (newCtx > 0 && newCtx != g_lastCtx && newLayer) {
