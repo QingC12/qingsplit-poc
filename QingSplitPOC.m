@@ -994,6 +994,12 @@ static void poc_keep_float(void) {
         } @catch (NSException *e) { }
         poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld lc=%ld native=%@ src=%@", winAlive, hostAlive,
                 actStr, (long)newCtx, (long)g_lastCtx, (long)lc, NSStringFromCGSize(kn), ksrc);
+        // v0.3.14: app 重新打开（layer 重新出现）后，再次执行主屏回退 ——
+        // SCREEN_HIDE 只在首次建窗时执行一次，lc=0 恢复显示后（SCREEN_SHOW_RESTORE）需重新隐藏
+        // poc_screen_hide 幂等（g_sbContainer 非 nil 自动跳过；找不到只日志），每 3s 调用安全
+        if (g_lastSid && newCtx > 0 && g_sbContainer == nil) {
+            poc_screen_hide(g_lastSid);
+        }
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
         if (newCtx == 0) {
             poc_probe_scene_apis(targetScene);
