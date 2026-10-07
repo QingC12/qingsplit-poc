@@ -1013,6 +1013,7 @@ static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 
 // v0.4.15: 手动触发 —— 屏幕右侧滑动弹出应用选择器，点选要悬浮的应用（替代自动触发）
 static UIWindow *g_triggerWin = nil;
 static UIView *g_pickerPanel = nil;      // v0.4.16: 应用选择器面板（右侧滑入）
+static NSArray *g_pickerRows = nil;      // v0.4.19: 选择器行视图（跟手高亮）
 static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene id（前缀匹配）
 static BOOL g_triggerArmed = NO;
 
@@ -1728,10 +1729,12 @@ static void poc_picker_show(void) {
         // 应用列表（运行中）
         NSArray *apps = poc_running_apps();
         CGFloat y = 54;
+        NSMutableArray *rows = [NSMutableArray array];
         for (NSDictionary *a in apps) {
             CGFloat rowH = 50;
             UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 280, rowH)];
             row.tag = 0;
+            row.backgroundColor = [UIColor clearColor];   // v0.4.19: 默认透明，跟手高亮时改色
             // bundle 文本（图标私有 API 尝试，失败仅文本）
             UIImage *icon = nil;
             @try {
@@ -1758,15 +1761,17 @@ static void poc_picker_show(void) {
             lbl.minimumScaleFactor = 0.6;
             [txtWrap addSubview:lbl];
             [row addSubview:txtWrap];
-            // 点击 → 选中
+            // 点击 → 选中（兼容点选；主交互是跟手松手确认）
             UIButton *bt = [UIButton buttonWithType:UIButtonTypeCustom];
             bt.frame = row.bounds;
             bt.tag = 1000 + (NSInteger)(y / rowH);
             [bt addTarget:[POCBootstrap class] action:@selector(poc_picker_row:) forControlEvents:UIControlEventTouchUpInside];
             [row addSubview:bt];
             [panel addSubview:row];
+            [rows addObject:row];
             y += rowH;
         }
+        g_pickerRows = rows;   // v0.4.19: 供跟手高亮
         panel.frame = CGRectMake(430, 90, 280, 752);
         panel.hidden = NO;
         [UIView animateWithDuration:0.25 animations:^{
@@ -1799,10 +1804,8 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.18: 右缘透明接收条（40px 宽，y 150-750）—— 触摸直接命中本窗口（level 998 最上层）。
-        // v0.4.17 UIScreenEdgePan 仍不触发（iOS17 系统手势仲裁抢占右缘触摸）→ 改 UIPanGestureRecognizer：
-        // 不依赖"边缘"识别，触摸命中 strip 即接管；淡红提示方便用户对准触发区域
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 40, 150, 40, 600)];
+        // v0.4.19: 右缘触发条（36px 宽 × 200 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 36, 366, 36, 200)];
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
         strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
@@ -1821,16 +1824,48 @@ static void poc_setup_edge_trigger(void) {
 
 @implementation POCBootstrap
 + (void)poc_edge_panned:(UIPanGestureRecognizer *)g {
-    // v0.4.18: 右缘接收条内左滑 → 弹出应用选择器（UIPan 不依赖边缘识别，命中即接管）
+    // v0.4.19: 跟手选择 —— 滑入弹选择器，手指在面板内上下移动高亮当前行，松手确认/关闭
+    CGPoint p = [g locationInView:g.view];   // rootView 坐标 = 屏幕坐标
+    if (g.state == UIGestureRecognizerStateBegan) {
+        if (g_pickerPanel && !g_pickerPanel.hidden) poc_picker_hide();   // 重复滑入先收旧面板
+        return;
+    }
     if (g.state == UIGestureRecognizerStateChanged) {
         CGPoint t = [g translationInView:g.view];
-        if (t.x < -30) {   // 明显向左滑动（>30pt）
-            if (g_pickerPanel && !g_pickerPanel.hidden) {   // 面板已显示 → 复位防重复
-                [g setTranslation:CGPointZero inView:g.view];
-                return;
-            }
+        if (t.x < -30 && !(g_pickerPanel && !g_pickerPanel.hidden)) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
+        }
+        // 面板内行高亮跟随手指（手指屏幕 y → 面板行；面板 frame=(142,90,280,752)，行从面板内 y=54 起 50/行）
+        if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerRows.count) {
+            CGRect pf = g_pickerPanel.frame;
+            CGFloat rowTop = pf.origin.y + 54;
+            NSInteger idx = -1;
+            if (p.y >= rowTop) idx = (NSInteger)((p.y - rowTop) / 50.0);
+            if (idx < 0 || idx >= (NSInteger)g_pickerRows.count) idx = -1;
+            for (NSUInteger i = 0; i < g_pickerRows.count; i++) {
+                UIView *row = g_pickerRows[i];
+                row.backgroundColor = (i == (NSUInteger)idx) ? [UIColor colorWithWhite:1.0 alpha:0.18]
+                                                             : [UIColor clearColor];
+            }
+        }
+    }
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        if (g_pickerPanel && !g_pickerPanel.hidden) {
+            CGRect pf = g_pickerPanel.frame;
+            CGFloat rowTop = pf.origin.y + 54;
+            NSInteger idx = -1;
+            if (p.y >= rowTop) idx = (NSInteger)((p.y - rowTop) / 50.0);
+            if (idx >= 0 && idx < (NSInteger)g_pickerRows.count) {
+                NSArray *apps = poc_running_apps();
+                if (idx < (NSInteger)apps.count) {
+                    poc_picker_select(apps[idx][@"sid"]);   // 松手停在某 App → 浮窗打开
+                } else {
+                    poc_picker_hide();                      // 行越界 → 关闭不动作
+                }
+            } else {
+                poc_picker_hide();                           // 没停在任何 App → 自动关闭
+            }
         }
     }
 }
@@ -1844,7 +1879,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.18 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.19 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
