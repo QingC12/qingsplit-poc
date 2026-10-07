@@ -555,7 +555,12 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (_contentView != cv) {
         [_contentView removeFromSuperview];
         _contentView = cv;
-        if (cv) [self addSubview:cv];
+        if (cv) {
+            // v0.4.16: 内容视图同步圆角裁剪（悬浮窗四角圆润，内容不再盖成方形）
+            cv.layer.cornerRadius = 20;
+            cv.layer.masksToBounds = YES;
+            [self addSubview:cv];
+        }
         [self setNeedsLayout];
     }
 }
@@ -565,7 +570,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (self) {
         // v0.3.11: 去除手势区灰色背景（用户要求）——容器背景透明，只留白色边框线 + 角落把手
         self.backgroundColor = [UIColor clearColor];
-        self.layer.cornerRadius = 12;
+        self.layer.cornerRadius = 20;   // v0.4.16: 圆角化四角（内容视图同步裁剪）
         self.layer.borderWidth = 0;   // v0.4.15: 去白框 —— 手势指引（横条/竖条/图标）已足够
         self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
         self.clipsToBounds = YES;
@@ -1005,9 +1010,10 @@ static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host �
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
 static BOOL g_floatClosed = NO;   // v0.3.18: 用户点击关闭后保持关闭（防止 1s tick 自动重建）；目标 scene 消失后复位
 static UIView *g_sbContainer = nil;  // v0.3.12: 主屏回退 —— 目标 app 的 SB 呈现容器（隐藏后露出桌面）
-// v0.4.15: 手动触发 —— SB 常显"浮"按钮，点击把当前前台 App 拉进浮窗（不再自动弹）
+// v0.4.15: 手动触发 —— 屏幕右侧滑动弹出应用选择器，点选要悬浮的应用（替代自动触发）
 static UIWindow *g_triggerWin = nil;
-static UIButton *g_triggerBtn = nil;
+static UIView *g_pickerPanel = nil;      // v0.4.16: 应用选择器面板（右侧滑入）
+static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene id（前缀匹配）
 static BOOL g_triggerArmed = NO;
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
@@ -1451,10 +1457,12 @@ static void poc_try_float(void) {
     g_triggerArmed = NO;
 
     // 1. 确定目标
-    // v0.4.0: 正式插件化 —— 设置优先：targets（逗号分隔多 app，留空=auto）> /tmp/qsp_target（兼容）
+    // v0.4.16: 手动选择（右缘滑动选择器）优先 > 设置 targets > /tmp/qsp_target（兼容）
     NSString *targetsSet = poc_setting_str(@"targets", @"");
     NSString *wanted = nil;
-    if (targetsSet.length) {
+    if (g_manualSid.length) {
+        wanted = g_manualSid;
+    } else if (targetsSet.length) {
         wanted = targetsSet;
     } else {
         NSString *fileWanted = [NSString stringWithContentsOfFile:@"/tmp/qsp_target"
@@ -1645,18 +1653,136 @@ static void poc_try_float(void) {
     });
 }
 
-// 注入入口：延迟 5s 启动，之后每 3s 尝试一次（等待目标 App scene 出现）
+// 注入入口：延迟 5s 启动，之后每 1s 尝试一次（等待手动触发/目标 App scene 出现）
 @interface POCBootstrap : NSObject
 @end
 
-// v0.4.15: 手动触发按钮 —— SB 常显 44×44 半透明"浮"圆钮，可拖动（记忆位置）
-// 点击 → g_triggerArmed → 下次 tick 把当前前台 App 拉进浮窗
-static void poc_create_trigger_button(void) {
+// v0.4.16: 屏幕右侧滑动选择器（Stheno 风格）—— 右缘滑入 → 弹出运行中 App 列表 → 点选进浮窗
+static UIViewController *g_pickerVC = nil;   // 承载面板的控制器（trigger window 的 rootVC 动态创建）
+
+static void poc_picker_hide(void) {
+    @try {
+        if (g_pickerPanel) {
+            [UIView animateWithDuration:0.2 animations:^{
+                g_pickerPanel.frame = CGRectMake(430, g_pickerPanel.frame.origin.y,
+                                                 g_pickerPanel.frame.size.width, g_pickerPanel.frame.size.height);
+            } completion:^(BOOL done) {
+                g_pickerPanel.hidden = YES;
+            }];
+        }
+    } @catch (NSException *e) { }
+}
+
+// 运行中 App 列表（去重）：workspace scenes → sceneID:xxx → bundle id
+static NSArray *poc_running_apps(void) {
+    NSMutableArray *apps = [NSMutableArray array];
+    NSMutableSet *seen = [NSMutableSet set];
+    for (id sc in poc_all_scenes()) {
+        NSString *sid = poc_scene_id(sc);
+        if (![sid hasPrefix:@"sceneID:"]) continue;
+        if ([sid containsString:@"com.apple."]) continue;
+        if ([sid containsString:@"Stheno"] || [sid containsString:@"QingSplit"]) continue;
+        NSString *bundle = [sid substringFromIndex:@"sceneID:".length];
+        if ([bundle containsString:@"-"]) bundle = [bundle substringToIndex:[bundle rangeOfString:@"-"].location];
+        if (!bundle.length || [seen containsObject:bundle]) continue;
+        [seen addObject:bundle];
+        [apps addObject:@{@"sid": sid, @"bundle": bundle}];
+    }
+    return apps;
+}
+
+static void poc_picker_select(NSString *sid) {
+    g_manualSid = [sid copy];
+    g_triggerArmed = YES;
+    poc_log(@"PICKER_SELECT sid=%@ armed=1", sid);
+    poc_picker_hide();
+}
+
+static void poc_picker_show(void) {
+    @try {
+        if (!g_triggerWin || g_win) return;   // 浮窗已激活 → 不弹选择器
+        if (!g_pickerVC) {
+            UIViewController *vc = [[UIViewController alloc] init];
+            vc.view.backgroundColor = [UIColor clearColor];
+            g_triggerWin.rootViewController = vc;
+            g_pickerVC = vc;
+        }
+        // 面板：右侧 280 宽，垂直居中，白色圆角（左侧圆角 20）
+        UIView *panel = g_pickerPanel;
+        if (!panel) {
+            panel = [[UIView alloc] initWithFrame:CGRectMake(430, 90, 280, 752)];
+            panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
+            panel.layer.cornerRadius = 20;
+            panel.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
+            panel.clipsToBounds = YES;
+            g_pickerPanel = panel;
+            [g_pickerVC.view addSubview:panel];
+        }
+        [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
+        // 标题
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 12, 250, 30)];
+        title.text = @"选择要悬浮的应用";
+        title.textColor = [UIColor whiteColor];
+        title.font = [UIFont boldSystemFontOfSize:17];
+        [panel addSubview:title];
+        // 应用列表（运行中）
+        NSArray *apps = poc_running_apps();
+        CGFloat y = 54;
+        for (NSDictionary *a in apps) {
+            CGFloat rowH = 50;
+            UIView *row = [[UIView alloc] initWithFrame:CGRectMake(0, y, 280, rowH)];
+            row.tag = 0;
+            // bundle 文本（图标私有 API 尝试，失败仅文本）
+            UIImage *icon = nil;
+            @try {
+                SEL s = sel_registerName("_applicationIconImageForBundleIdentifier:");
+                if ([[UIImage class] respondsToSelector:s]) {
+                    id (*fn)(id, SEL, id) = (id (*)(id, SEL, id))objc_msgSend;
+                    icon = fn([UIImage class], s, a[@"bundle"]);
+                }
+            } @catch (NSException *e) { }
+            UIView *txtWrap = [[UIView alloc] initWithFrame:CGRectMake(16, 0, 250, rowH)];
+            if (icon) {
+                UIImageView *iv = [[UIImageView alloc] initWithImage:icon];
+                iv.frame = CGRectMake(0, (rowH - 30) / 2.0, 30, 30);
+                iv.layer.cornerRadius = 6;
+                iv.clipsToBounds = YES;
+                [txtWrap addSubview:iv];
+                txtWrap.frame = CGRectMake(16, 0, 250, rowH);
+            }
+            UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(icon ? 40 : 0, (rowH - 20) / 2.0, 220, 20)];
+            lbl.text = a[@"bundle"];
+            lbl.textColor = [UIColor whiteColor];
+            lbl.font = [UIFont systemFontOfSize:14];
+            lbl.adjustsFontSizeToFitWidth = YES;
+            lbl.minimumScaleFactor = 0.6;
+            [txtWrap addSubview:lbl];
+            [row addSubview:txtWrap];
+            // 点击 → 选中
+            UIButton *bt = [UIButton buttonWithType:UIButtonTypeCustom];
+            bt.frame = row.bounds;
+            bt.tag = 1000 + (NSInteger)(y / rowH);
+            [bt addTarget:[POCBootstrap class] action:@selector(poc_picker_row:) forControlEvents:UIControlEventTouchUpInside];
+            [row addSubview:bt];
+            [panel addSubview:row];
+            y += rowH;
+        }
+        panel.frame = CGRectMake(430, 90, 280, 752);
+        panel.hidden = NO;
+        [UIView animateWithDuration:0.25 animations:^{
+            panel.frame = CGRectMake(430 - 280 - 8, 90, 280, 752);
+        }];
+        poc_log(@"PICKER_SHOW apps=%ld", (long)apps.count);
+    } @catch (NSException *e) {
+        poc_log(@"PICKER_SHOW_EXC %@", e.name);
+    }
+}
+
+static void poc_setup_edge_trigger(void) {
     @try {
         g_triggerWin = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-        g_triggerWin.windowLevel = 998.0;   // 低于浮窗 999.0（浮窗激活时按钮隐藏，无层级冲突）
+        g_triggerWin.windowLevel = 998.0;   // 低于浮窗 999.0（浮窗激活时窗口隐藏）
         g_triggerWin.userInteractionEnabled = YES;
-        NSString *winScene = @"nil";
         @try {
             Class wsc = NSClassFromString(@"UIWindowScene");
             id chosen = nil; id fallback = nil;
@@ -1667,81 +1793,58 @@ static void poc_create_trigger_button(void) {
                 if ([sid containsString:@"SuperHighLevelSystemAperture"]) { chosen = sc; break; }
             }
             id use = chosen ?: fallback;
-            if (use) {
-                [g_triggerWin setValue:use forKey:@"windowScene"];
-                winScene = poc_scene_id(use);
-            }
+            if (use) [g_triggerWin setValue:use forKey:@"windowScene"];
         } @catch (NSException *e) { }
         UIViewController *vc = [[UIViewController alloc] init];
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
-        // 位置：记忆优先（triggerX/triggerY），默认右侧中上 (386, 300)
-        CGFloat bx = 386, by = 300;
-        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:poc_state_paths()[0]];
-        if (d) {
-            CGFloat tx = [d[@"triggerX"] doubleValue], ty = [d[@"triggerY"] doubleValue];
-            if (tx > 0 && ty > 0) { bx = tx; by = ty; }
-        }
-        bx = MAX(8, MIN(bx, 430 - 52)); by = MAX(120, MIN(by, 932 - 52));
-        g_triggerBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        g_triggerBtn.frame = CGRectMake(bx, by, 44, 44);
-        g_triggerBtn.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.35];
-        g_triggerBtn.layer.cornerRadius = 22;
-        g_triggerBtn.layer.borderWidth = 1;
-        g_triggerBtn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.3].CGColor;
-        [g_triggerBtn setTitle:@"浮" forState:UIControlStateNormal];
-        [g_triggerBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-        g_triggerBtn.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-        [g_triggerBtn addTarget:[POCBootstrap class] action:@selector(poc_trigger_tapped) forControlEvents:UIControlEventTouchUpInside];
-        // 可拖动（记忆位置到状态 plist）
-        UIPanGestureRecognizer *tgPan = [[UIPanGestureRecognizer alloc] initWithTarget:[POCBootstrap class] action:@selector(poc_trigger_panned:)];
-        [g_triggerBtn addGestureRecognizer:tgPan];
-        [vc.view addSubview:g_triggerBtn];
+        g_pickerVC = vc;
         g_triggerWin.hidden = NO;
-        poc_log(@"TRIGGER_BTN shown at=(%.0f,%.0f) scene=%@", bx, by, winScene);
+        // 右缘滑入手势 → SB 主 window（右侧中段 y∈[150,750]，避开控制中心右上角）
+        UIWindow *sbWin = nil;
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            if (w.isKeyWindow) { sbWin = w; break; }
+        }
+        if (!sbWin) sbWin = [[[UIApplication sharedApplication] delegate] window];
+        if (sbWin) {
+            UIScreenEdgePanGestureRecognizer *ep = [[UIScreenEdgePanGestureRecognizer alloc]
+                                                    initWithTarget:[POCBootstrap class]
+                                                    action:@selector(poc_edge_panned:)];
+            ep.edges = UIRectEdgeRight;
+            [sbWin addGestureRecognizer:ep];
+            poc_log(@"EDGE_TRIGGER armed window=%@", poc_cls(sbWin));
+        } else {
+            poc_log(@"EDGE_TRIGGER no sb window");
+        }
     } @catch (NSException *e) {
-        poc_log(@"TRIGGER_BTN_EXC %@", e.name);
+        poc_log(@"EDGE_TRIGGER_EXC %@", e.name);
     }
 }
 
 @implementation POCBootstrap
-+ (void)poc_trigger_tapped {
-    // v0.4.15: 点击"浮"按钮 → 下次 tick 把当前前台 App 拉进浮窗
-    if (g_win) { if (g_triggerWin) g_triggerWin.hidden = YES; return; }  // 浮窗已开（正常按钮已隐藏）
-    g_triggerArmed = YES;
-    poc_log(@"TRIGGER_TAP armed=1");
++ (void)poc_edge_panned:(UIScreenEdgePanGestureRecognizer *)g {
+    // v0.4.16: 右侧滑动 → 弹出应用选择器（仅右侧中段 y∈[150,750]，避免抢控制中心）
+    if (g.state != UIGestureRecognizerStateBegan) return;
+    CGPoint p = [g locationInView:g.view];
+    if (p.y < 150 || p.y > 750) return;
+    poc_picker_show();
 }
-+ (void)poc_trigger_panned:(UIPanGestureRecognizer *)g {
-    // v0.4.15: 拖动按钮 → 实时移动 + 松手记忆位置（状态 plist triggerX/triggerY）
-    if (!g_triggerBtn) return;
-    if (g.state == UIGestureRecognizerStateChanged) {
-        CGPoint t = [g translationInView:g_triggerBtn.superview];
-        CGRect f = g_triggerBtn.frame;
-        f.origin.x = MAX(8, MIN(f.origin.x + t.x, 430 - 52));
-        f.origin.y = MAX(120, MIN(f.origin.y + t.y, 932 - 52));
-        g_triggerBtn.frame = f;
-        [g setTranslation:CGPointZero inView:g_triggerBtn.superview];
-    } else if (g.state == UIGestureRecognizerStateEnded) {
-        NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:poc_state_paths()[0]];
-        if (!d) d = [NSMutableDictionary dictionary];
-        d[@"triggerX"] = @(g_triggerBtn.frame.origin.x);
-        d[@"triggerY"] = @(g_triggerBtn.frame.origin.y);
-        for (NSString *p in poc_state_paths()) {
-            if ([d writeToFile:p atomically:YES]) {
-                poc_log(@"TRIGGER_POS_SAVED (%.0f,%.0f)", g_triggerBtn.frame.origin.x, g_triggerBtn.frame.origin.y);
-                break;
-            }
-        }
++ (void)poc_picker_row:(UIButton *)btn {
+    // v0.4.16: 点击应用行 → 选中该 scene 进浮窗
+    NSArray *apps = poc_running_apps();
+    NSInteger idx = btn.tag - 1000;
+    if (idx >= 0 && idx < (NSInteger)apps.count) {
+        poc_picker_select(apps[idx][@"sid"]);
     }
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.15 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.16 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
-        // v0.4.15: 手动触发按钮（SB 常显）
-        poc_create_trigger_button();
+        // v0.4.16: 右侧滑动应用选择器（Stheno 风格入口）
+        poc_setup_edge_trigger();
         // v0.3.15: KEEP tick 3s → 1s —— 主屏回退响应提速（app 重新打开后 ≤1s 隐藏全屏，缓解双 host 白屏闪烁）
         NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm) {
             poc_try_float();
