@@ -1875,6 +1875,47 @@ static void poc_picker_show(void) {
     }
 }
 
+static void poc_setup_edge_trigger(void) {
+    @try {
+        g_triggerWin = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
+        g_triggerWin.windowLevel = 998.0;   // 低于浮窗 999.0（浮窗激活时窗口隐藏）
+        g_triggerWin.userInteractionEnabled = YES;
+        @try {
+            Class wsc = NSClassFromString(@"UIWindowScene");
+            id chosen = nil; id fallback = nil;
+            for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+                if (!wsc || ![sc isKindOfClass:wsc]) continue;
+                if (!fallback) fallback = sc;
+                NSString *sid = poc_scene_id(sc);
+                if ([sid containsString:@"SuperHighLevelSystemAperture"]) { chosen = sc; break; }
+            }
+            id use = chosen ?: fallback;
+            if (use) [g_triggerWin setValue:use forKey:@"windowScene"];
+        } @catch (NSException *e) { }
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = [UIColor clearColor];
+        g_triggerWin.rootViewController = vc;
+        g_pickerVC = vc;
+        // v0.4.20: 右缘触发条（20px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 20, 391, 20, 150)];
+        strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
+        strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
+                                       initWithTarget:[POCBootstrap class]
+                                       action:@selector(poc_edge_panned:)];
+        pan.minimumNumberOfTouches = 1;
+        pan.maximumNumberOfTouches = 1;
+        [strip addGestureRecognizer:pan];
+        [vc.view addSubview:strip];
+        g_triggerWin.hidden = NO;
+        poc_log(@"EDGE_TRIGGER armed strip=%@", NSStringFromCGRect(strip.frame));
+    } @catch (NSException *e) {
+        poc_log(@"EDGE_TRIGGER_EXC %@", e.name);
+    }
+}
+
+@implementation POCBootstrap
+
 // v0.4.26: Myrtle 风格网格数据源/代理（实例方法）
 - (NSInteger)collectionView:(UICollectionView *)cv numberOfItemsInSection:(NSInteger)section {
     return (NSInteger)g_pickerApps.count;
@@ -1885,7 +1926,6 @@ static void poc_picker_show(void) {
     NSInteger idx = ip.item;
     if (idx >= (NSInteger)g_pickerApps.count) return cell;
     NSDictionary *a = g_pickerApps[idx];
-    // 名称
     NSString *dispName = a[@"name"] ?: a[@"bundle"];
     // 图标（三级：proxy → SBIcon → 色块）
     UIImage *icon = nil;
@@ -1931,7 +1971,6 @@ static void poc_picker_show(void) {
             ((UIImageView *)iv).image = icon;
             iv.backgroundColor = [UIColor clearColor];
         } else {
-            // 色块兜底
             ((UIImageView *)iv).image = nil;
             NSUInteger hsh = [dispName hash];
             iv.backgroundColor = [UIColor colorWithHue:((hsh % 360) / 360.0) saturation:0.5 brightness:0.72 alpha:1.0];
@@ -1971,46 +2010,6 @@ static void poc_picker_show(void) {
     }
 }
 
-static void poc_setup_edge_trigger(void) {
-    @try {
-        g_triggerWin = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-        g_triggerWin.windowLevel = 998.0;   // 低于浮窗 999.0（浮窗激活时窗口隐藏）
-        g_triggerWin.userInteractionEnabled = YES;
-        @try {
-            Class wsc = NSClassFromString(@"UIWindowScene");
-            id chosen = nil; id fallback = nil;
-            for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
-                if (!wsc || ![sc isKindOfClass:wsc]) continue;
-                if (!fallback) fallback = sc;
-                NSString *sid = poc_scene_id(sc);
-                if ([sid containsString:@"SuperHighLevelSystemAperture"]) { chosen = sc; break; }
-            }
-            id use = chosen ?: fallback;
-            if (use) [g_triggerWin setValue:use forKey:@"windowScene"];
-        } @catch (NSException *e) { }
-        UIViewController *vc = [[UIViewController alloc] init];
-        vc.view.backgroundColor = [UIColor clearColor];
-        g_triggerWin.rootViewController = vc;
-        g_pickerVC = vc;
-        // v0.4.20: 右缘触发条（20px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 20, 391, 20, 150)];
-        strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
-        strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
-                                       initWithTarget:[POCBootstrap class]
-                                       action:@selector(poc_edge_panned:)];
-        pan.minimumNumberOfTouches = 1;
-        pan.maximumNumberOfTouches = 1;
-        [strip addGestureRecognizer:pan];
-        [vc.view addSubview:strip];
-        g_triggerWin.hidden = NO;
-        poc_log(@"EDGE_TRIGGER armed strip=%@", NSStringFromCGRect(strip.frame));
-    } @catch (NSException *e) {
-        poc_log(@"EDGE_TRIGGER_EXC %@", e.name);
-    }
-}
-
-@implementation POCBootstrap
 + (void)poc_edge_panned:(UIPanGestureRecognizer *)g {
     // v0.4.19: 跟手选择 —— 滑入弹选择器，手指在面板内上下移动高亮当前行，松手确认/关闭
     CGPoint p = [g locationInView:g.view.window];   // v0.4.23: 窗口坐标=屏幕坐标（g.view 是触发条，其相对坐标与行判定空间不一致）
