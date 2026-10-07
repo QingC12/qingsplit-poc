@@ -683,39 +683,50 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         self.center = c;
         [g setTranslation:CGPointZero inView:self.superview];
     } else if (g.state == UIGestureRecognizerStateEnded) {
-        // v0.4.0: 半屏吸附 + 边缘吸附（可开关）+ easeOut 动画打磨
+        // v0.4.7: 借鉴 Stheno —— ① 拖动惯性（SwiftUI DragGesture predictedEndLocation 概念）
+        // ② 弹簧吸附动画（SwiftUI spring(response:dampingFraction:) 对应 UIKit UISpringTimingParameters）
         CGRect f = self.frame;
         CGFloat nx = f.origin.x, ny = f.origin.y;
-        BOOL snapped = NO;
-        // 半屏吸附：宽度 ≥ 60% 屏宽（258）时贴左/右缘 → 吸附为半屏（215 宽），高度保持
-        if (poc_setting_bool(@"halfSnap", YES) && f.size.width >= 258.0) {
-            if (f.origin.x < 40) { nx = 0; snapped = YES; }
-            else if ((430 - (f.origin.x + f.size.width)) < 40) { nx = 215; snapped = YES; }
-            if (snapped) {
-                CGRect sf = CGRectMake(nx, f.origin.y, 215, f.size.height);
-                poc_log(@"HALF_SNAP %@", NSStringFromCGRect(sf));
-                [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut
-                                 animations:^{ self.frame = sf; } completion:nil];
-                poc_save_float_state(sf);
-            }
+        BOOL flung = NO;
+        CGPoint vel = [g velocityInView:self.superview];
+        CGFloat speed = (CGFloat)hypot(vel.x, vel.y);
+        if (speed > 500.0) {
+            flung = YES;
+            nx = nx + vel.x * 0.18;
+            ny = ny + vel.y * 0.18;
+            // clamp：至少 60px 留在屏内（v0.3.16 拖动约束）
+            CGFloat minX = -f.size.width + 60.0, maxX = 430.0 - 60.0;
+            CGFloat minY = -f.size.height + 60.0, maxY = 932.0 - 60.0;
+            nx = MAX(minX, MIN(nx, maxX));
+            ny = MAX(minY, MIN(ny, maxY));
         }
-        if (!snapped) {
-            // 边缘吸附（v0.3.16）—— v0.4.0 加开关
-            if (poc_setting_bool(@"edgeSnap", YES)) {
-                if (f.origin.x < 40) nx = 0;
-                else if ((430 - (f.origin.x + f.size.width)) < 40) nx = 430 - f.size.width;
-                if (f.origin.y < 40) ny = 0;
-                else if ((932 - (f.origin.y + f.size.height)) < 40) ny = 932 - f.size.height;
-            }
-            if (nx != f.origin.x || ny != f.origin.y) {
-                CGRect sf = CGRectMake(nx, ny, f.size.width, f.size.height);
-                poc_log(@"SNAP_EDGE %@", NSStringFromCGRect(sf));
-                [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut
-                                 animations:^{ self.frame = sf; } completion:nil];
-                poc_save_float_state(sf);
-            } else {
-                poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
-            }
+        // 半屏吸附（基于惯性后的位置）：宽 ≥ 60% 屏宽（258）贴左/右缘 → 215 半屏
+        BOOL snapped = NO;
+        if (poc_setting_bool(@"halfSnap", YES) && f.size.width >= 258.0) {
+            if (nx < 40) { nx = 0; snapped = YES; }
+            else if ((430 - (nx + f.size.width)) < 40) { nx = 215; snapped = YES; }
+        }
+        // 边缘吸附（v0.3.16）—— v0.4.0 加开关
+        if (!snapped && poc_setting_bool(@"edgeSnap", YES)) {
+            if (nx < 40) nx = 0;
+            else if ((430 - (nx + f.size.width)) < 40) nx = 430 - f.size.width;
+            if (ny < 40) ny = 0;
+            else if ((932 - (ny + f.size.height)) < 40) ny = 932 - f.size.height;
+        }
+        CGRect sf = CGRectMake(nx, ny, f.size.width, f.size.height);
+        BOOL moved = (fabs(nx - f.origin.x) > 0.5 || fabs(ny - f.origin.y) > 0.5);
+        if (snapped) poc_log(@"HALF_SNAP %@", NSStringFromCGRect(sf));
+        else if (moved) poc_log(@"MOVE_END %@ vel=%@ flung=%d", NSStringFromCGRect(sf), NSStringFromCGPoint(vel), flung);
+        if (moved) {
+            // v0.4.7: 弹簧动画（SwiftUI spring 对应）—— dampingRatio 0.82 回弹柔顺
+            UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.82
+                                                                                  initialVelocity:CGVectorMake(0, 0)];
+            UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:tp];
+            [anim addAnimations:^{ self.frame = sf; }];
+            [anim startAnimation];
+            poc_save_float_state(sf);   // 保存惯性/吸附后的目标位置
+        } else {
+            poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
         }
     }
 }
@@ -939,11 +950,15 @@ static void poc_close_float(void) {
     @try {
         poc_screen_restore();          // 1. 恢复主屏显示（若有隐藏）
         if (g_win) {
-            // v0.4.0: 关闭动画 —— 0.18s 淡出后移除（先解除引用防重复点击二次动画）
+            // v0.4.0+: 关闭动画 —— v0.4.7 借鉴 Stheno AnyTransition（asymmetric 移除侧）：
+            // 0.15s 淡出 + scale 1.0→0.96，完成后移除（先解除引用防重复点击二次动画）
             UIWindow *w = g_win;
             g_win = nil;
-            [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseIn
-                             animations:^{ w.alpha = 0; }
+            [UIView animateWithDuration:0.15 delay:0 options:UIViewAnimationOptionCurveEaseIn
+                             animations:^{
+                w.alpha = 0.0;
+                w.transform = CGAffineTransformMakeScale(0.96, 0.96);
+            }
                              completion:^(BOOL done) {
                 w.rootViewController = nil;
                 w.hidden = YES;
@@ -1346,6 +1361,15 @@ static void poc_try_float(void) {
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
                 NSStringFromCGSize(native), nsrc);
+        // v0.4.7: 打开转场 —— 借鉴 Stheno AnyTransition.scale+opacity（asymmetric 插入侧）：
+        // scale 0.94→1.0 + alpha 0→1，0.22s easeOut
+        g_win.alpha = 0.0;
+        g_win.transform = CGAffineTransformMakeScale(0.94, 0.94);
+        [UIView animateWithDuration:0.22 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                         animations:^{
+            g_win.alpha = 1.0;
+            g_win.transform = CGAffineTransformIdentity;
+        } completion:nil];
     } @catch (NSException *e) {
         poc_log(@"WINDOW_EXC %@ — abort", e.name);
         return;
