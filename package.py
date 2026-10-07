@@ -26,11 +26,14 @@ def find_dylib():
     return None
 
 PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
+PREFS_SRC = os.path.join(BASE, "QingSplitPrefs.plist")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.3.18_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.4.0_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
+# v0.4.0: 正式插件化 —— PreferenceLoader 设置页（Settings 里显示 QingSplit 面板）
+PREFS_DEST = "var/jb/Library/PreferenceLoader/Preferences/QingSplitPrefs.plist"
 
 def ar_member(name, data, mode=0o100644):
     mtime = int(time.time())
@@ -92,6 +95,9 @@ def main():
         ("var/jb/Library/MobileSubstrate/DynamicLibraries/", None, True, 0o755),
         (DYLIB_DEST, dylib, False, 0o755),
         (PLIST_DEST, PLIST_SRC, False, 0o644),
+        ("var/jb/Library/PreferenceLoader/", None, True, 0o755),
+        ("var/jb/Library/PreferenceLoader/Preferences/", None, True, 0o755),
+        (PREFS_DEST, PREFS_SRC, False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
 

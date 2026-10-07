@@ -242,15 +242,29 @@ static BOOL poc_is_target_scene(NSString *sid, NSString *wanted) {
 
 static NSDictionary *poc_pick_target(NSString *wanted) {
     // 返回 @{scene, sid, pid, layer, ctx}
+    // v0.4.0: 支持逗号分隔多目标（设置 targets）；任一命中即可
+    NSMutableArray *wantedList = nil;
+    if (wanted.length) {
+        wantedList = [NSMutableArray array];
+        for (NSString *w in [wanted componentsSeparatedByString:@","]) {
+            NSString *t = [w stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            if (t.length) [wantedList addObject:t];
+        }
+    }
     NSArray *scenes = poc_all_scenes();
     id fallback = nil; NSString *fallbackSid = nil;
     for (id sc in scenes) {
         NSString *sid = poc_scene_id(sc);
         if (!poc_is_target_scene(sid, nil)) continue;
         if (!fallback) { fallback = sc; fallbackSid = sid; }
-        if (wanted.length && [sid hasPrefix:wanted]) {
-            fallback = sc; fallbackSid = sid;
-            break;
+        if (wantedList.count) {
+            for (NSString *w in wantedList) {
+                if ([sid hasPrefix:w]) {
+                    fallback = sc; fallbackSid = sid;
+                    break;
+                }
+            }
+            if ([fallbackSid isEqualToString:sid]) break;
         }
     }
     if (!fallback) return nil;
@@ -513,6 +527,7 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化）
 static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义在下方全局区，供 QSFloatContainer 手势 ended 调用）
 static void poc_close_float(void);            // v0.3.16 前向声明（关闭浮窗：只移除窗口，不动 Scene）
+static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明（设置读取，定义在下方全局区）
 
 @interface QSFloatContainer : UIView
 @property (nonatomic, strong) UIView *contentView;
@@ -563,6 +578,8 @@ static void poc_close_float(void);            // v0.3.16 前向声明（关闭�
 }
 // v0.3.16: 关闭按钮 —— 右上角 44×44 热区 + 白圆 × 视觉。点击 → 只移除浮窗（不杀 Scene）
 - (void)addCloseButton {
+    // v0.4.0: 关闭按钮开关（设置）
+    if (!poc_setting_bool(@"closeBtn", YES)) return;
     CGFloat s = 44;
     UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
     b.frame = CGRectMake(self.bounds.size.width - s, 0, s, s);
@@ -666,20 +683,39 @@ static void poc_close_float(void);            // v0.3.16 前向声明（关闭�
         self.center = c;
         [g setTranslation:CGPointZero inView:self.superview];
     } else if (g.state == UIGestureRecognizerStateEnded) {
-        // v0.3.16: 边缘吸附 —— 松手时距某边缘 < 40px 则吸到该边缘（不做半屏吸附，留给多浮窗阶段）
+        // v0.4.0: 半屏吸附 + 边缘吸附（可开关）+ easeOut 动画打磨
         CGRect f = self.frame;
         CGFloat nx = f.origin.x, ny = f.origin.y;
-        if (f.origin.x < 40) nx = 0;
-        else if ((430 - (f.origin.x + f.size.width)) < 40) nx = 430 - f.size.width;
-        if (f.origin.y < 40) ny = 0;
-        else if ((932 - (f.origin.y + f.size.height)) < 40) ny = 932 - f.size.height;
-        if (nx != f.origin.x || ny != f.origin.y) {
-            CGRect snapped = CGRectMake(nx, ny, f.size.width, f.size.height);
-            poc_log(@"SNAP_EDGE %@", NSStringFromCGRect(snapped));
-            [UIView animateWithDuration:0.2 animations:^{ self.frame = snapped; }];
-            poc_save_float_state(snapped);   // 保存吸附后的目标位置
-        } else {
-            poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
+        BOOL snapped = NO;
+        // 半屏吸附：宽度 ≥ 60% 屏宽（258）时贴左/右缘 → 吸附为半屏（215 宽），高度保持
+        if (poc_setting_bool(@"halfSnap", YES) && f.size.width >= 258.0) {
+            if (f.origin.x < 40) { nx = 0; snapped = YES; }
+            else if ((430 - (f.origin.x + f.size.width)) < 40) { nx = 215; snapped = YES; }
+            if (snapped) {
+                CGRect sf = CGRectMake(nx, f.origin.y, 215, f.size.height);
+                poc_log(@"HALF_SNAP %@", NSStringFromCGRect(sf));
+                [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                                 animations:^{ self.frame = sf; } completion:nil];
+                poc_save_float_state(sf);
+            }
+        }
+        if (!snapped) {
+            // 边缘吸附（v0.3.16）—— v0.4.0 加开关
+            if (poc_setting_bool(@"edgeSnap", YES)) {
+                if (f.origin.x < 40) nx = 0;
+                else if ((430 - (f.origin.x + f.size.width)) < 40) nx = 430 - f.size.width;
+                if (f.origin.y < 40) ny = 0;
+                else if ((932 - (f.origin.y + f.size.height)) < 40) ny = 932 - f.size.height;
+            }
+            if (nx != f.origin.x || ny != f.origin.y) {
+                CGRect sf = CGRectMake(nx, ny, f.size.width, f.size.height);
+                poc_log(@"SNAP_EDGE %@", NSStringFromCGRect(sf));
+                [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseOut
+                                 animations:^{ self.frame = sf; } completion:nil];
+                poc_save_float_state(sf);
+            } else {
+                poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
+            }
         }
     }
 }
@@ -745,6 +781,22 @@ static NSArray *poc_state_paths(void) {
         @"/var/mobile/Documents/com.qingsplit.poc.plist",
         @"/tmp/qsp_state.plist",
     ];
+}
+// v0.4.0: 正式插件化 —— 设置读取（与浮窗状态同 plist；PreferenceLoader 写入）
+static NSDictionary *poc_settings(void) {
+    for (NSString *p in poc_state_paths()) {
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+        if (d) return d;
+    }
+    return nil;
+}
+static BOOL poc_setting_bool(NSString *key, BOOL def) {
+    id v = poc_settings()[key];
+    return v ? [v boolValue] : def;
+}
+static NSString *poc_setting_str(NSString *key, NSString *def) {
+    id v = poc_settings()[key];
+    return v ? [NSString stringWithFormat:@"%@", v] : def;
 }
 static void poc_save_float_state(CGRect f) {
     @try {
@@ -887,9 +939,15 @@ static void poc_close_float(void) {
     @try {
         poc_screen_restore();          // 1. 恢复主屏显示（若有隐藏）
         if (g_win) {
-            g_win.rootViewController = nil;   // 解除 VC 引用，便于释放
-            g_win.hidden = YES;
+            // v0.4.0: 关闭动画 —— 0.18s 淡出后移除（先解除引用防重复点击二次动画）
+            UIWindow *w = g_win;
             g_win = nil;
+            [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseIn
+                             animations:^{ w.alpha = 0; }
+                             completion:^(BOOL done) {
+                w.rootViewController = nil;
+                w.hidden = YES;
+            }];
         }
         g_container = nil;
         g_hostView = nil;
@@ -1085,7 +1143,8 @@ static void poc_keep_float(void) {
         // v0.3.14: app 重新打开（layer 重新出现）后，再次执行主屏回退 ——
         // SCREEN_HIDE 只在首次建窗时执行一次，lc=0 恢复显示后（SCREEN_SHOW_RESTORE）需重新隐藏
         // poc_screen_hide 幂等（g_sbContainer 非 nil 自动跳过；找不到只日志），每 3s 调用安全
-        if (g_lastSid && newCtx > 0 && g_sbContainer == nil) {
+        // v0.4.0: 主屏回退开关（设置）
+        if (g_lastSid && newCtx > 0 && g_sbContainer == nil && poc_setting_bool(@"screenHide", YES)) {
             poc_screen_hide(g_lastSid);
         }
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
@@ -1134,15 +1193,24 @@ static void poc_keep_float(void) {
 }
 
 static void poc_try_float(void) {
+    // v0.4.0: 总开关（设置）
+    if (!poc_setting_bool(@"enabled", YES)) return;
     if (g_win) {   // v0.1.8: 窗口已建立 → 保持模式
         poc_keep_float();
         return;
     }
 
     // 1. 确定目标
-    NSString *wanted = [NSString stringWithContentsOfFile:@"/tmp/qsp_target"
-                                                encoding:NSUTF8StringEncoding error:NULL];
-    wanted = [wanted stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // v0.4.0: 正式插件化 —— 设置优先：targets（逗号分隔多 app，留空=auto）> /tmp/qsp_target（兼容）
+    NSString *targetsSet = poc_setting_str(@"targets", @"");
+    NSString *wanted = nil;
+    if (targetsSet.length) {
+        wanted = targetsSet;
+    } else {
+        NSString *fileWanted = [NSString stringWithContentsOfFile:@"/tmp/qsp_target"
+                                                        encoding:NSUTF8StringEncoding error:NULL];
+        wanted = [fileWanted stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
     NSDictionary *target = poc_pick_target(wanted);
     if (!target) {
         // v0.3.17: TARGET_NONE 日志节流（1s tick 下闲置会刷屏）——每 10s 一条
@@ -1293,7 +1361,8 @@ static void poc_try_float(void) {
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
     // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
     // 在 POC_OK 后执行：若 SB 容器隐藏失败不影响浮窗（只日志）。
-    poc_screen_hide(sid);
+    // v0.4.0: 主屏回退开关（设置）
+    if (poc_setting_bool(@"screenHide", YES)) poc_screen_hide(sid);
     // v0.1.7: 心跳日志验证主线程活性（若 10s/30s TICK 缺失 → 主线程被 host 阻塞）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         poc_log(@"TICK_10S main-thread-alive");
