@@ -60,6 +60,54 @@ jobs:
         run: |
           ldid -S QingSplitPOC.dylib
 
+      # v0.4.3: PreferenceBundles 可执行 —— 动态继承 PSListController（无私有头依赖），
+      # 输出到 bundle 内（bundle 可执行须与 bundle 同名、无扩展名）
+      - name: Build PreferenceBundle executable
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          cat > QingSplitPrefsRootListController.m <<'EOF'
+          #import <Foundation/Foundation.h>
+          #import <UIKit/UIKit.h>
+          #import <objc/message.h>
+          #import <objc/runtime.h>
+
+          static id qs_specifiers(id self, SEL _cmd) {
+              id sp = [self valueForKey:@"_specifiers"];
+              if (!sp) {
+                  SEL sel = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:");
+                  id (*msg)(id, SEL, id, id) = (id (*)(id, SEL, id, id))objc_msgSend;
+                  sp = msg(self, sel, @"Root", self);
+                  [self setValue:sp forKey:@"_specifiers"];
+              }
+              return sp;
+          }
+
+          __attribute__((constructor))
+          static void qs_prefs_bundle_init(void) {
+              Class ps = NSClassFromString(@"PSListController");
+              if (!ps) return;
+              Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
+              if (sub) {
+                  class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
+                  objc_registerClassPair(sub);
+              }
+          }
+          EOF
+          xcrun --sdk iphoneos clang \
+            -arch arm64e \
+            -isysroot "$SDK" \
+            -fobjc-arc \
+            -miphoneos-version-min=15.0 \
+            -dynamiclib \
+            -Xlinker -fixup_chains \
+            QingSplitPrefsRootListController.m \
+            -framework Foundation \
+            -framework UIKit \
+            -o QingSplitPrefs.bundle/QingSplitPrefs
+          ldid -S QingSplitPrefs.bundle/QingSplitPrefs
+          file QingSplitPrefs.bundle/QingSplitPrefs
+          ls -l QingSplitPrefs.bundle/
+
       - name: Package deb (var/jb rootless layout)
         run: |
           python3 package.py
@@ -69,5 +117,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.2_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.3_iphoneos-arm64e.deb
           if-no-files-found: warn

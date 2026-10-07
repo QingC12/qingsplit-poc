@@ -11,7 +11,7 @@
 		<key>bundle</key>
 		<string>QingSplitPrefs</string>
 		<key>detail</key>
-		<string>PSListController</string>
+		<string>QingSplitPrefs.QingSplitPrefsRootListController</string>
 		<key>isController</key>
 		<true/>
 	</dict>
