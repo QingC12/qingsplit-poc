@@ -519,11 +519,16 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 }
 - (void)onPinch:(UIPinchGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
+        // v0.3.2: 保持宽高比缩放 —— 先统一 scale，再按比例 clamp（原版 W/H 独立 clamp 会破坏比例 → 内容变形）
+        CGFloat ratio = self.bounds.size.height / self.bounds.size.width;   // H/W
         CGFloat s = g.scale;
         CGFloat newW = self.bounds.size.width * s;
-        CGFloat newH = self.bounds.size.height * s;
-        newW = MIN(MAX(newW, 180), 500);
-        newH = MIN(MAX(newH, 260), 1000);
+        // 比例约束：宽 180~430（屏幕宽），高不超过 932（屏幕高），全程保持 ratio
+        if (newW < 180) newW = 180;
+        if (newW > 430) newW = 430;
+        CGFloat maxWByH = 932.0 / ratio;
+        if (newW > maxWByH) newW = maxWByH;
+        CGFloat newH = newW * ratio;
         self.bounds = CGRectMake(0, 0, newW, newH);
         g.scale = 1.0;
     }
