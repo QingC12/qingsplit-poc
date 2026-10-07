@@ -544,6 +544,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     CGRect _preSnapFrame;   // v0.4.9: 吸附前的 frame（尺寸还原依据）
     BOOL _lpActive;         // v0.4.9: 长按拖动进行中
     CGPoint _lpOrigin, _lpStart;
+    UIView *_knobL, *_knobR;   // v0.4.10: 角落把手引用（吸附改宽后强制重定位，防跑出窗口）
+    UIButton *_closeBtn;       // v0.4.10: 关闭按钮引用
 }
 // v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
 - (void)setContentView:(UIView *)cv {
@@ -609,6 +611,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     [b addSubview:dot];
     [b addTarget:self action:@selector(onCloseTap:) forControlEvents:UIControlEventTouchUpInside];
     [self addSubview:b];
+    _closeBtn = b;   // v0.4.10
 }
 - (void)onCloseTap:(id)sender {
     poc_log(@"CLOSE_TAP");
@@ -621,9 +624,16 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     k.userInteractionEnabled = NO;
     k.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin;
     [self addSubview:k];
+    // v0.4.10: 按初始 x 归属左/右把手，供 layoutSubviews 强制重定位
+    if (f.origin.x < self.bounds.size.width / 2.0) _knobL = k; else _knobR = k;
 }
 - (void)layoutSubviews {
     [super layoutSubviews];
+    // v0.4.10: 吸附改宽后把手/关闭按钮必须跟随新 bounds（autoresizing 对 x=w-32 这类绝对位不可靠）
+    CGRect b = self.bounds;
+    if (_knobL) _knobL.frame = CGRectMake(12, b.size.height - 32, 20, 20);
+    if (_knobR) _knobR.frame = CGRectMake(b.size.width - 32, b.size.height - 32, 20, 20);
+    if (_closeBtn) _closeBtn.frame = CGRectMake(b.size.width - 44, 0, 44, 44);
     UIView *cv = self.contentView;
     if (!cv) return;
     // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
