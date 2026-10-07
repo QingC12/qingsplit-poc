@@ -538,7 +538,12 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     UIPanGestureRecognizer *_pan;
     UIPinchGestureRecognizer *_pinch;
     UIPanGestureRecognizer *_scalePan;   // v0.3.8: 左下/右下角单指滑动缩放
+    UILongPressGestureRecognizer *_longPress;   // v0.4.9: Stheno LongPressGesture —— 长按整窗拖动
     UIView *_contentView;   // v0.3.1: 手动 ivar（自定义 setter）
+    BOOL _halfSnapped;      // v0.4.9: 当前处于半屏吸附态（拖离时还原浮动尺寸）
+    CGRect _preSnapFrame;   // v0.4.9: 吸附前的 frame（尺寸还原依据）
+    BOOL _lpActive;         // v0.4.9: 长按拖动进行中
+    CGPoint _lpOrigin, _lpStart;
 }
 // v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
 - (void)setContentView:(UIView *)cv {
@@ -562,12 +567,18 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
         _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(onPinch:)];
         _scalePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onScalePan:)];
+        // v0.4.9: Stheno LongPressGesture(minimumDuration:maximumDistance:) 对应 —— 0.35s / 25pt
+        _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
+        _longPress.minimumPressDuration = 0.35;
+        _longPress.allowableMovement = 25;
         _pan.delegate = self;
         _pinch.delegate = self;
         _scalePan.delegate = self;
+        _longPress.delegate = self;
         [self addGestureRecognizer:_pan];
         [self addGestureRecognizer:_pinch];
         [self addGestureRecognizer:_scalePan];
+        [self addGestureRecognizer:_longPress];
         // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）；v0.3.15: 缩小到 20×20 跟随角落区
         [self addCornerKnob:CGRectMake(12, self.bounds.size.height - 32, 20, 20)];
         [self addCornerKnob:CGRectMake(self.bounds.size.width - 32, self.bounds.size.height - 32, 20, 20)];
@@ -666,10 +677,85 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         return YES;
     }
     if (gr == _pinch) return NO;   // v0.3.12: 双指缩放已去除（只保留角落缩放）
+    if (gr == _longPress) {
+        // v0.4.9: 长按整窗（内容区也可）—— 排除底部条（pan 更直接）与角落（scalePan）
+        CGRect bottomBar = CGRectMake(0, self.bounds.size.height - 72, self.bounds.size.width, 72);
+        if (CGRectContainsPoint(bottomBar, p)) return NO;
+        CGRect bl = CGRectMake(0, self.bounds.size.height - 44, 44, 44);
+        CGRect br = CGRectMake(self.bounds.size.width - 44, self.bounds.size.height - 44, 44, 44);
+        if (CGRectContainsPoint(bl, p) || CGRectContainsPoint(br, p)) return NO;
+        return YES;
+    }
     return YES;
+}
+// v0.4.9: 长按拖动不与其他容器手势同时（内容区 App 手势除外——UIKit 默认由长按识别后接管）
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
+    return NO;
+}
+- (void)onLongPress:(UILongPressGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateBegan) {
+        _lpActive = YES;
+        _lpOrigin = self.center;
+        _lpStart = [g locationInView:self.superview];
+        // 轻触觉反馈提示进入拖动模式（Stheno 手感）
+        UIImpactFeedbackGenerator *fb = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [fb impactOccurred];
+    } else if (g.state == UIGestureRecognizerStateChanged && _lpActive) {
+        CGPoint cur = [g locationInView:self.superview];
+        CGFloat dx = cur.x - _lpStart.x, dy = cur.y - _lpStart.y;
+        CGRect f = self.frame;
+        CGFloat minCx = 60 - f.size.width / 2.0, maxCx = 430 - 60 + f.size.width / 2.0;
+        CGFloat minCy = 60 - f.size.height / 2.0, maxCy = 932 - 60 + f.size.height / 2.0;
+        self.center = CGPointMake(MAX(minCx, MIN(_lpOrigin.x + dx, maxCx)),
+                                  MAX(minCy, MIN(_lpOrigin.y + dy, maxCy)));
+    } else if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        _lpActive = NO;
+        // 边缘吸附（25px 阈值）+ 弹簧动画（与 pan ended 一致，无惯性）
+        CGRect f = self.frame;
+        CGFloat nx = f.origin.x, ny = f.origin.y;
+        BOOL snapped = NO;
+        CGFloat snapW = f.size.width;
+        if (poc_setting_bool(@"halfSnap", YES) && f.size.width >= 258.0) {
+            if (nx < 25) { nx = 0; snapped = YES; snapW = 215; }
+            else if ((430 - (nx + f.size.width)) < 25) { nx = 215; snapped = YES; snapW = 215; }
+        }
+        if (!snapped && poc_setting_bool(@"edgeSnap", YES)) {
+            if (nx < 25) nx = 0;
+            else if ((430 - (nx + f.size.width)) < 25) nx = 430 - f.size.width;
+            if (ny < 25) ny = 0;
+            else if ((932 - (ny + f.size.height)) < 25) ny = 932 - f.size.height;
+        }
+        CGRect sf = CGRectMake(nx, ny, snapW, f.size.height);
+        if (snapped) {
+            _preSnapFrame = f;   // v0.4.9: 记录吸附前尺寸（拖离还原）
+            _halfSnapped = YES;
+            poc_log(@"LP_SNAP %@", NSStringFromCGRect(sf));
+        }
+        if (fabs(nx - f.origin.x) > 0.5 || fabs(ny - f.origin.y) > 0.5) {
+            UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.82
+                                                                                  initialVelocity:CGVectorMake(0, 0)];
+            UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:tp];
+            [anim addAnimations:^{ self.frame = sf; }];
+            [anim startAnimation];
+            poc_save_float_state(sf);
+        } else {
+            poc_save_float_state(f);
+        }
+    }
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
+        // v0.4.9: 半屏吸附后拖离 → 还原吸附前浮动尺寸（Stheno medusaFrameLast/finalFrame 精神）
+        if (_halfSnapped && self.bounds.size.width <= 215.5) {
+            _halfSnapped = NO;
+            CGRect pf = _preSnapFrame;
+            if (pf.size.width > 0 && pf.size.height > 0) {
+                CGPoint c = self.center;
+                self.bounds = CGRectMake(0, 0, pf.size.width, pf.size.height);
+                self.center = c;   // 中心保持手指位置，宽高还原
+                poc_log(@"HALF_UNSNAP restore=%.0fx%.0f", pf.size.width, pf.size.height);
+            }
+        }
         CGPoint t = [g translationInView:self.superview];
         CGPoint c = CGPointMake(self.center.x + t.x, self.center.y + t.y);
         // v0.3.16: 拖动约束 —— 浮窗至少保留 60px 在屏幕内（左右/上下都不能完全拖出）
@@ -716,7 +802,12 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         }
         CGRect sf = CGRectMake(nx, ny, snapW, f.size.height);
         BOOL moved = (fabs(nx - f.origin.x) > 0.5 || fabs(ny - f.origin.y) > 0.5);
-        if (snapped) poc_log(@"HALF_SNAP %@", NSStringFromCGRect(sf));
+        if (snapped) {
+            // v0.4.9: 记录吸附前尺寸（拖离时还原）
+            _preSnapFrame = f;
+            _halfSnapped = YES;
+            poc_log(@"HALF_SNAP %@", NSStringFromCGRect(sf));
+        }
         else if (moved) poc_log(@"MOVE_END %@ vel=%@ flung=%d", NSStringFromCGRect(sf), NSStringFromCGPoint(vel), flung);
         if (moved) {
             // v0.4.7: 弹簧动画（SwiftUI spring 对应）—— dampingRatio 0.82 回弹柔顺
@@ -753,6 +844,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         self.bounds = CGRectMake(0, 0, newW, newH);
         [g setTranslation:CGPointZero inView:self];
     } else if (g.state == UIGestureRecognizerStateEnded) {
+        _halfSnapped = NO;   // v0.4.9: 角落缩放脱离半屏态（用户主动改尺寸）
         poc_save_float_state(self.frame);   // v0.3.12: 尺寸记忆
     }
 }
