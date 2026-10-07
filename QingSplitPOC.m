@@ -1625,7 +1625,9 @@ static void poc_try_float(void) {
             native = [[UIScreen mainScreen] bounds].size;
             nsrc = @"screen-fallback";
         }
-        CGFloat cw = 340, ch = 500;
+        // v0.4.29: 初始居中尺寸 Stheno 风格 —— 宽 280（≈屏幕 65%），高度按原生比例；
+        // 与吸附舒适比例(215×466≈0.46)一致、比吸附大一圈，居中不再"胖"
+        CGFloat cw = 280, ch = 500;
         if (native.width > 0 && native.height > 0) {
             ch = cw * (native.height / native.width);
             if (ch > 860) { ch = 860; cw = ch * (native.width / native.height); }
@@ -1709,6 +1711,9 @@ static NSArray *g_pickerApps = nil;            // v0.4.26: 网格数据（poc_al
 static POCBootstrap *g_pickerDelegate = nil;   // v0.4.26: 网格数据源/代理实例
 static UISelectionFeedbackGenerator *g_pickerSelFB = nil;   // v0.4.26: 触觉反馈（Myrtle 特征）
 static UIImpactFeedbackGenerator *g_pickerImpFB = nil;
+static NSMutableDictionary *g_pickerIconCache = nil;        // v0.4.29: bundle → UIImage（后台预取，避免主线程卡屏）
+static NSArray *g_pickerAppsCache = nil;                    // v0.4.29: 应用列表 5s 缓存（打开选择器不再全量枚举）
+static CFTimeInterval g_pickerAppsCacheAt = 0;
 
 static void poc_picker_hide(void) {
     @try {
@@ -1760,6 +1765,9 @@ static BOOL poc_launch_app(NSString *bundle) {
 
 // v0.4.24: 全部可选择应用 = 运行中（优先）+ 已安装（按名称排序，取前 maxRows）
 static NSArray *poc_all_apps(void) {
+    // v0.4.29: 5s 缓存 —— 打开选择器不再每次全量枚举（LSApplicationWorkspace 慢），避免主线程卡屏
+    CFTimeInterval now = CACurrentMediaTime();
+    if (g_pickerAppsCache && (now - g_pickerAppsCacheAt) < 5.0) return g_pickerAppsCache;
     NSArray *running = poc_running_apps();
     NSMutableArray *all = [NSMutableArray arrayWithArray:running];
     NSMutableSet *seen = [NSMutableSet set];
@@ -1794,7 +1802,34 @@ static NSArray *poc_all_apps(void) {
         NSString *na = a[@"name"] ?: @"", *nb = b[@"name"] ?: @"";
         return [na compare:nb options:NSCaseInsensitiveSearch];
     }];
+    g_pickerAppsCache = sortedNotRun;                       // v0.4.29
+    g_pickerAppsCacheAt = CACurrentMediaTime();
     return sortedNotRun;
+}
+
+// v0.4.29: 图标取用（LSApplicationProxy 链，后台线程安全）+ bundle→UIImage 缓存
+static UIImage *poc_picker_icon(NSString *bid) {
+    if (!bid.length) return nil;
+    if (!g_pickerIconCache) g_pickerIconCache = [NSMutableDictionary dictionary];
+    UIImage *cached = g_pickerIconCache[bid];
+    if (cached) return cached;
+    UIImage *icon = nil;
+    @try {
+        id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
+        if (proxy) {
+            NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
+            if (!([d isKindOfClass:[NSData class]] && d.length)) {
+                SEL s2 = sel_registerName("iconDataForVariant:scale:");
+                if ([proxy respondsToSelector:s2]) {
+                    NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
+                    d = fn(proxy, s2, @"2x", 2.0);
+                }
+            }
+            if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
+        }
+    } @catch (NSException *e) { icon = nil; }
+    if (icon) g_pickerIconCache[bid] = icon;
+    return icon;
 }
 
 static void poc_picker_select(NSDictionary *app) {
@@ -1949,22 +1984,21 @@ static void poc_setup_edge_trigger(void) {
     if (idx >= (NSInteger)g_pickerApps.count) return cell;
     NSDictionary *a = g_pickerApps[idx];
     NSString *dispName = a[@"name"] ?: a[@"bundle"];
-    // 图标（三级：proxy → SBIcon → 色块）
-    UIImage *icon = nil;
-    @try {
-        id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:a[@"bundle"]];
-        if (proxy) {
-            NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
-            if (!([d isKindOfClass:[NSData class]] && d.length)) {
-                SEL s2 = sel_registerName("iconDataForVariant:scale:");
-                if ([proxy respondsToSelector:s2]) {
-                    NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
-                    d = fn(proxy, s2, @"2x", 2.0);
-                }
+    // 图标 —— v0.4.29: 走缓存助手（首次色块占位，后台取到后整体刷新）；SBIconController 链保留在主线程兜底
+    if (!g_pickerIconCache) g_pickerIconCache = [NSMutableDictionary dictionary];
+    UIImage *icon = g_pickerIconCache[a[@"bundle"]];
+    if (!icon) {
+        NSDictionary *snap = a;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            UIImage *ic = poc_picker_icon(snap[@"bundle"]);
+            if (ic) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!g_pickerGrid) return;
+                    [g_pickerGrid reloadData];   // 图标就绪后轻量全刷（77 cell 成本低）
+                });
             }
-            if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
-        }
-    } @catch (NSException *e) { icon = nil; }
+        });
+    }
     if (!icon) {
         @try {
             id iconCtrl = [NSClassFromString(@"SBIconController") performSelector:@selector(sharedInstance)];
@@ -2105,7 +2139,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.28 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.29 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
