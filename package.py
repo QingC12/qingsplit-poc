@@ -27,14 +27,18 @@ def find_dylib():
 
 PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
 PREFS_SRC = os.path.join(BASE, "QingSplitPrefs.plist")
+PREFS_BUNDLE_DIR = os.path.join(BASE, "QingSplitPrefs.bundle")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.4.40_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.4.41_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
-# v0.4.40: PreferenceLoader 设置页 —— plist-only 模式（无需 executable，Shuffle 兼容）
-# 之前 bundle 模式缺可执行文件 → 白屏/加载失败；现 spec 内直接定义 specifiers
+# v0.4.41: PreferenceLoader 设置页 —— bundle 模式 + 真编译 executable（与 Stheno/FloatingView 一致，Shuffle 兼容）
+# v0.4.40 plist-only 被 Shuffle 聚合吞掉不显示；v0.4.2 bundle 模式缺 executable 白屏 → 现在补齐 executable
 PREFS_DEST = "var/jb/Library/PreferenceLoader/Preferences/QingSplitPrefs.plist"
+PREFS_BUNDLE_ROOT_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist"
+PREFS_BUNDLE_EXE_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/QingSplitPrefs"
+PREFS_BUNDLE_INFO_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Info.plist"
 
 def ar_member(name, data, mode=0o100644):
     mtime = int(time.time())
@@ -99,6 +103,11 @@ def main():
         ("var/jb/Library/PreferenceLoader/", None, True, 0o755),
         ("var/jb/Library/PreferenceLoader/Preferences/", None, True, 0o755),
         (PREFS_DEST, PREFS_SRC, False, 0o644),
+        ("var/jb/Library/PreferenceBundles/", None, True, 0o755),
+        ("var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/", None, True, 0o755),
+        (PREFS_BUNDLE_ROOT_DEST, os.path.join(PREFS_BUNDLE_DIR, "Root.plist"), False, 0o644),
+        (PREFS_BUNDLE_EXE_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitPrefs"), False, 0o755),
+        (PREFS_BUNDLE_INFO_DEST, os.path.join(PREFS_BUNDLE_DIR, "Info.plist"), False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
 
