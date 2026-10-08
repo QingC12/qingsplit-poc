@@ -1813,10 +1813,37 @@ static NSArray *poc_running_apps(void) {
 
 // v0.4.24: 启动未运行应用（SpringBoard 进程内 LSApplicationWorkspace）
 static BOOL poc_launch_app(NSString *bundle) {
+    // v0.4.33: 优先 FBSOpenApplicationService（ScreenCore/FloatingView 均使用，异步 fire-and-forget，
+    // 不等待 app launch 完成，杜绝 v0.4.31 的 10s 主线程阻塞；调用宽松 performSelector + try/catch）
+    @try {
+        id svc = [NSClassFromString(@"FBSOpenApplicationService") performSelector:@selector(serviceWithDefaultShellEndpoint)];
+        id opts = [NSClassFromString(@"FBSOpenApplicationOptions") performSelector:@selector(optionsWithDictionary:)
+                                                                    withObject:@{@"FBSOpenApplicationOptionKeyActivate": @YES}];
+        if (svc && opts) {
+            // iOS15+ 签名：-[FBSOpenApplicationService openApplication:withOptions:clientHandle:error:]
+            // application 参数用 FBProcessHandle（handleForBundleIdentifier:）；不存在则抛异常回退 LS
+            id handle = [NSClassFromString(@"FBProcessHandle") performSelector:@selector(handleForBundleIdentifier:) withObject:bundle];
+            if (handle) {
+                NSError *err = nil;
+                [svc openApplication:handle withOptions:opts clientHandle:nil error:&err];
+                if (!err) {
+                    poc_log(@"LAUNCH_FBS sid=%@ ok=1", bundle);
+                    return YES;
+                }
+                poc_log(@"LAUNCH_FBS_ERR sid=%@ %@", bundle, err.localizedDescription ?: @"?");
+            } else {
+                poc_log(@"LAUNCH_FBS_NO_HANDLE sid=%@ — fallback LS", bundle);
+            }
+        }
+    } @catch (NSException *e) {
+        poc_log(@"LAUNCH_FBS_EXC sid=%@ %@ — fallback LS", bundle, e.name);
+    }
+    // 兜底：LSApplicationWorkspace（v0.4.32 已在后台线程调用，不阻塞主线程）
     @try {
         id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
         if (ws) {
             BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:bundle];
+            if (ok) poc_log(@"LAUNCH_LS sid=%@ ok=1", bundle);
             return ok;
         }
     } @catch (NSException *e) {
@@ -2250,7 +2277,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.32 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.33 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
