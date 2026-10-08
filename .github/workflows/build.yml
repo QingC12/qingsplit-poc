@@ -134,19 +134,29 @@ jobs:
                   [d2 writeToFile:p2 atomically:YES];
               }
           }
-          static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
-              @try {
-                  id key = nil;
-                  if (spec) {
-                      key = [spec valueForKey:@"identifier"];
-                      if ([key isKindOfClass:[NSString class]] && [key hasPrefix:@"qs_"]) {
-                          key = [key substringFromIndex:3];
-                      } else {
-                          key = nil;
-                          id ao = objc_getAssociatedObject(spec, &kKeyAO);
-                          if (ao) key = ao;
+          // 从（可能是内部副本的）spec 取 key：① identifier（qs_ 前缀）② name 匹配 controller.specifiers → 原 spec 的 AO
+          static id qs_key_from_spec(id self, id spec) {
+              if (!spec) return nil;
+              id ident = [spec valueForKey:@"identifier"];
+              if ([ident isKindOfClass:[NSString class]] && [ident hasPrefix:@"qs_"]) {
+                  return [ident substringFromIndex:3];
+              }
+              NSString *name = [spec valueForKey:@"name"];
+              if (name) {
+                  NSArray *specs = [self valueForKey:@"specifiers"];
+                  for (id s in specs) {
+                      NSString *sname = [s valueForKey:@"name"];
+                      if (sname && [sname isEqualToString:name]) {
+                          id ao = objc_getAssociatedObject(s, &kKeyAO);
+                          if (ao) return ao;
                       }
                   }
+              }
+              return nil;
+          }
+          static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
+              @try {
+                  id key = qs_key_from_spec(self, spec);
                   qs_log(@"SET_CALLED key=%@ val=%@ defaults=com.qingsplit.poc\n", key, value);
                   if (key) qs_write_cfg(key, value);
               } @catch (NSException *e) { qs_log(@"SET_EXC %@\n", e.name); }
@@ -158,13 +168,7 @@ jobs:
           // readPreferenceValue: —— 开关读回（非 qs_ spec 走 original，避免影响全局设置页）
           static id qs_readpref(id self, SEL _cmd, id specifier) {
               @try {
-                  NSString *key = nil;
-                  if (specifier) {
-                      id ident = [specifier valueForKey:@"identifier"];
-                      if ([ident isKindOfClass:[NSString class]] && [ident hasPrefix:@"qs_"]) {
-                          key = [ident substringFromIndex:3];
-                      }
-                  }
+                  id key = qs_key_from_spec(self, specifier);
                   if (key) {
                       NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:qs_cfg_path()];
                       if (d && d[key]) {
@@ -225,8 +229,9 @@ jobs:
               if (ft) setProp(spec, spSel, ft, @"footerText");
               if (key) {
                   objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                  // identifier 存 qs_<key>：iOS 必保留（cell reuse），写入/读回都从它取 key
-                  setProp(spec, spSel, [@"qs_" stringByAppendingString:key], @"identifier");
+                  // identifier 存 qs_<key>：走 setIdentifier: setter（copy 属性，副本保留），写入/读回都从它取 key
+                  @try { [spec setValue:[@"qs_" stringByAppendingString:key] forKey:@"identifier"]; }
+                  @catch (NSException *e) { qs_log(@"IDENT_SET_EXC %@\n", e.name); }
               }
               if (defaults) objc_setAssociatedObject(spec, &kDefaultsAO, defaults, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
               return spec;
@@ -379,5 +384,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.55_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.56_iphoneos-arm64e.deb
           if-no-files-found: warn
