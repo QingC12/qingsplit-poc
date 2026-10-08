@@ -1041,6 +1041,8 @@ static NSTimeInterval g_launchPendingAt = 0;
 static BOOL g_sceneActivationUsed = NO;          // v0.4.30: 本次选择器是否已走系统级 scene 激活（UIWindowSceneActivationConfiguration）
 static BOOL g_sceneActivationFallbackDone = NO;  // v0.4.30: 系统激活 15s 无 scene → 已降级老路径启动一次
 
+static BOOL poc_launch_app(NSString *bundle);    // v0.4.30: 前向声明（tick 超时 fallback 早于定义）
+
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
 // v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
 // （rootless fake root 下 /var/jb/var/mobile 可能不可写），日志记录成功路径；读时同样多路径回退
@@ -2099,8 +2101,8 @@ static void poc_setup_edge_trigger(void) {
         NSUserActivity *ua = [[NSUserActivity alloc] initWithActivityType:@"com.qingsplit.launch"];
         ua.targetContentIdentifier = sid;
         ua.userInfo = @{@"bid": sid};
-        id inst = [cfgClass alloc];
-        id cfg = [inst performSelector:@selector(initWithUserActivity:) withObject:ua];
+        // v0.4.30: SDK 头可见（iOS 15+ 公开 API）→ 直接静态构造，避免 ARC performSelector init 保留语义
+        UIWindowSceneActivationConfiguration *cfg = [[UIWindowSceneActivationConfiguration alloc] initWithUserActivity:ua];
         poc_log(@"PICKER_SCENEACTIVATION sid=%@", sid);
         return cfg;
     } @catch (NSException *e) {
