@@ -25,13 +25,9 @@
 	</dict>
 	<dict>
 		<key>cell</key>
-		<string>PSLinkCell</string>
-		<key>label</key>
-		<string>目标 App</string>
-		<key>detail</key>
-		<string>QSTargetsController</string>
+		<string>PSGroupCell</string>
 		<key>footerText</key>
-		<string>选择可作为悬浮窗目标的应用</string>
+		<string>目标应用（开启后出现在右侧滑动选择器，可作为悬浮窗目标）</string>
 	</dict>
 	<dict>
 		<key>cell</key>

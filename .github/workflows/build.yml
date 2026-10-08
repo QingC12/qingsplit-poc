@@ -346,12 +346,29 @@ jobs:
               @try { [self setValue:arr forKey:@"_specifiers"]; } @catch (NSException *e) {}
               return arr;
           }
+          // v0.4.65: 目标应用开关直接内嵌主设置页（link/detail 子页在 iOS17 手动 spec 下 CFSet 检查崩溃，废弃）
+          static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
+              @try {
+                  Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+                  if (!wsCls) { qs_log(@"TARGETS_WS MISSING\n"); return; }
+                  id ws = [wsCls performSelector:@selector(defaultWorkspace)];
+                  NSArray *apps = [ws performSelector:@selector(allApplications)];
+                  qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
+                  for (id proxy in apps) {
+                      NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
+                      NSString *name = [proxy performSelector:@selector(localizedName)];
+                      if (!bid.length || !name.length) continue;
+                      if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
+                      NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":name,
+                                          @"key":[@"target_" stringByAppendingString:bid],
+                                          @"defaults":@"com.qingsplit.poc"};
+                      id spec = qs_mk_spec(PS, self, d);
+                      if (spec) [arr addObject:spec];
+                  }
+              } @catch (NSException *e) { qs_log(@"TARGETS_EXC %@\n", e.name); }
+          }
           static id qs_specifiers(id self, SEL _cmd) {
               qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
-              if ([NSStringFromClass([self class]) hasPrefix:@"QSTargets"]) {
-                  qs_log(@"TARGETS_CONTROLLER\n");
-                  return qs_target_specifiers(self);
-              }
               id sp = nil;
               NSString *bp = qs_bundle_path();
               qs_log(@"DYLD_BUNDLE_PATH %@\n", bp ? bp : @"NIL");
@@ -399,6 +416,8 @@ jobs:
                           }
                       }
                       sp = arr;
+                      // v0.4.65: 追加目标应用开关（cell=6 已验证，内嵌主设置页，跳过 link/detail）
+                      qs_add_target_switches(arr, PS, self);
                   }
               }
               if (!sp) {
@@ -472,14 +491,7 @@ jobs:
               } else {
                   qs_log(@"CLASS_EXISTS\n");
               }
-              Class sub2 = objc_allocateClassPair(ps, "QSTargetsController", 0);
-              if (sub2) {
-                  class_addMethod(sub2, @selector(specifiers), (IMP)qs_specifiers, "@@:");
-                  objc_registerClassPair(sub2);
-                  qs_log(@"CLASS_REGISTERED QSTargetsController\n");
-              } else {
-                  qs_log(@"TARGETS_CLASS_EXISTS\n");
-              }
+              // v0.4.65: QSTargetsController 子页废弃（iOS17 CFSet 检查崩溃），目标应用开关内嵌主设置页
           }
           EOF
           # v0.4.44: 编译 fat 双架构（arm64 + arm64e，对齐 FloatingView universal binary），再 lipo 合成
@@ -519,5 +531,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.64_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.65_iphoneos-arm64e.deb
           if-no-files-found: warn
