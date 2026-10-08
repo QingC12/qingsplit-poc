@@ -296,6 +296,8 @@ jobs:
               if (ph) setProp(spec, spSel, ph, @"placeholder");
               id ft = [dict objectForKey:@"footerText"];
               if (ft) setProp(spec, spSel, ft, @"footerText");
+              id det = [dict objectForKey:@"detail"];
+              if (det) setProp(spec, spSel, det, @"detail");
               if (key) {
                   objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                   // identifier 存 qs_<key>：走 setIdentifier: setter（copy 属性，副本保留），写入/读回都从它取 key
@@ -314,8 +316,41 @@ jobs:
               } @catch (NSException *e) { qs_log(@"BUILD_DUMP_EXC %@\n", e.name); }
               return spec;
           }
+          // v0.4.63: 目标 App 子页 —— QSTargetsController 列出全部应用开关（cell=6 已证），写入 target_<bundleID>
+          static id qs_target_specifiers(id self) {
+              NSMutableArray *arr = [NSMutableArray array];
+              Class PS = NSClassFromString(@"PSSpecifier");
+              NSDictionary *g = @{@"cell":@"PSGroupCell", @"footerText":@"开启的应用会出现在右侧滑动选择器中，可作为悬浮窗目标"};
+              id gs = qs_mk_spec(PS, self, g);
+              if (gs) [arr addObject:gs];
+              Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+              qs_log(@"TARGETS_WS %@\n", wsCls ? @"FOUND" : @"MISSING");
+              if (wsCls) {
+                  id ws = [wsCls performSelector:@selector(defaultWorkspace)];
+                  NSArray *apps = [ws performSelector:@selector(allApplications)];
+                  qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
+                  for (id proxy in apps) {
+                      NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
+                      NSString *name = [proxy performSelector:@selector(localizedName)];
+                      if (!bid.length || !name.length) continue;
+                      if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
+                      NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":name,
+                                          @"key":[@"target_" stringByAppendingString:bid],
+                                          @"defaults":@"com.qingsplit.poc"};
+                      id spec = qs_mk_spec(PS, self, d);
+                      if (spec) [arr addObject:spec];
+                  }
+              }
+              qs_log(@"TARGETS_BUILT %lu\n", (unsigned long)[arr count]);
+              @try { [self setValue:arr forKey:@"_specifiers"]; } @catch (NSException *e) {}
+              return arr;
+          }
           static id qs_specifiers(id self, SEL _cmd) {
               qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
+              if ([NSStringFromClass([self class]) hasPrefix:@"QSTargets"]) {
+                  qs_log(@"TARGETS_CONTROLLER\n");
+                  return qs_target_specifiers(self);
+              }
               id sp = nil;
               NSString *bp = qs_bundle_path();
               qs_log(@"DYLD_BUNDLE_PATH %@\n", bp ? bp : @"NIL");
@@ -436,6 +471,14 @@ jobs:
               } else {
                   qs_log(@"CLASS_EXISTS\n");
               }
+              Class sub2 = objc_allocateClassPair(ps, "QSTargetsController", 0);
+              if (sub2) {
+                  class_addMethod(sub2, @selector(specifiers), (IMP)qs_specifiers, "@@:");
+                  objc_registerClassPair(sub2);
+                  qs_log(@"CLASS_REGISTERED QSTargetsController\n");
+              } else {
+                  qs_log(@"TARGETS_CLASS_EXISTS\n");
+              }
           }
           EOF
           # v0.4.44: 编译 fat 双架构（arm64 + arm64e，对齐 FloatingView universal binary），再 lipo 合成
@@ -475,5 +518,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.62_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.63_iphoneos-arm64e.deb
           if-no-files-found: warn

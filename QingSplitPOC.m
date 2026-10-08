@@ -1521,7 +1521,18 @@ static void poc_try_float(void) {
 
     // 1. 确定目标
     // v0.4.16: 手动选择（右缘滑动选择器）优先 > 设置 targets > /tmp/qsp_target（兼容）
+    // v0.4.63: 兼容"目标 App 子页"开关 —— targets 逗号分隔字符串 或 target_<bundleID>=1
     NSString *targetsSet = poc_setting_str(@"targets", @"");
+    if (!targetsSet.length) {
+        NSMutableArray *tl = [NSMutableArray array];
+        NSDictionary *all = poc_settings();
+        for (NSString *k in all) {
+            if ([k hasPrefix:@"target_"] && [all[k] boolValue]) {
+                [tl addObject:[k substringFromIndex:@"target_".length]];
+            }
+        }
+        if (tl.count) targetsSet = [tl componentsJoinedByString:@","];
+    }
     NSString *wanted = nil;
     if (g_manualSid.length) {
         wanted = g_manualSid;
@@ -2388,7 +2399,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.62 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.63 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");

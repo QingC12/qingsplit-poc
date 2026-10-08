@@ -25,17 +25,13 @@
 	</dict>
 	<dict>
 		<key>cell</key>
-		<string>PSEditTextCell</string>
+		<string>PSLinkCell</string>
 		<key>label</key>
 		<string>目标 App</string>
-		<key>key</key>
-		<string>targets</string>
-		<key>defaults</key>
-		<string>com.qingsplit.poc</string>
-		<key>default</key>
-		<string></string>
-		<key>placeholder</key>
-		<string>com.coolapk.app（多个用逗号分隔，留空=所有前台 App）</string>
+		<key>detail</key>
+		<string>QSTargetsController</string>
+		<key>footerText</key>
+		<string>选择可作为悬浮窗目标的应用</string>
 	</dict>
 	<dict>
 		<key>cell</key>
