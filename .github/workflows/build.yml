@@ -132,22 +132,38 @@ jobs:
                   ((void(*)(id, SEL, id, id))qs_orig_setpref)(self, _cmd, value, spec);
               }
           }
+          // v0.4.52: 不依赖 bundleForClass swizzle 是否被 loadSpecifiersFromPlistName: 内部采用
+          // 直接调用带 bundle 参数的变体 loadSpecifiersFromPlistName:target:bundle:，显式传我们的 bundle（确定性路径）
           static id qs_specifiers(id self, SEL _cmd) {
               qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
               id sp = nil;
-              @try {
-                  // loadSpecifiersFromPlistName: 是 PSListController 私有方法，用 objc_msgSend 显式调用
-                  SEL loadSel = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:");
-                  if ([self respondsToSelector:loadSel]) {
-                      id (*load)(id, SEL, id, id) = (id(*)(id, SEL, id, id))objc_msgSend;
-                      sp = load(self, loadSel, @"Root", self);
-                  } else {
-                      qs_log(@"LOAD_METHOD_MISSING\n");
+              NSBundle *our = [NSBundle bundleWithPath:@"/var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle"];
+              if (our) {
+                  qs_log(@"BUNDLE_PATH_OK %@\n", [our bundlePath]);
+                  NSString *rp = [our pathForResource:@"Root" ofType:@"plist"];
+                  qs_log(@"ROOT_PLIST_PATH %@\n", rp ? rp : @"NIL");
+                  @try {
+                      SEL loadSel2 = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:bundle:");
+                      if ([self respondsToSelector:loadSel2]) {
+                          id (*load2)(id, SEL, id, id, id) = (id(*)(id, SEL, id, id, id))objc_msgSend;
+                          sp = load2(self, loadSel2, @"Root", self, our);
+                          qs_log(@"LOAD2_COUNT %lu\n", (unsigned long)[(id)sp count]);
+                      } else {
+                          qs_log(@"LOAD2_METHOD_MISSING\n");
+                          SEL loadSel1 = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:");
+                          if ([self respondsToSelector:loadSel1]) {
+                              id (*load1)(id, SEL, id, id) = (id(*)(id, SEL, id, id))objc_msgSend;
+                              sp = load1(self, loadSel1, @"Root", self);
+                          } else {
+                              qs_log(@"LOAD1_METHOD_MISSING\n");
+                          }
+                      }
+                  } @catch (NSException *e) {
+                      qs_log(@"LOAD_EXC %@\n", e.name);
                       sp = nil;
                   }
-              } @catch (NSException *e) {
-                  qs_log(@"LOAD_EXC %@\n", e.name);
-                  sp = nil;
+              } else {
+                  qs_log(@"BUNDLE_PATH_FAIL\n");
               }
               if (!sp) {
                   qs_log(@"LOAD_FAILED Root.plist\n");
@@ -229,5 +245,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.51_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.52_iphoneos-arm64e.deb
           if-no-files-found: warn
