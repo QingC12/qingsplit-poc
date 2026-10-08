@@ -1824,13 +1824,29 @@ static BOOL poc_launch_app(NSString *bundle) {
             // application 参数用 FBProcessHandle（handleForBundleIdentifier:）；不存在则抛异常回退 LS
             id handle = [NSClassFromString(@"FBProcessHandle") performSelector:@selector(handleForBundleIdentifier:) withObject:bundle];
             if (handle) {
-                NSError *err = nil;
-                [svc openApplication:handle withOptions:opts clientHandle:nil error:&err];
-                if (!err) {
-                    poc_log(@"LAUNCH_FBS sid=%@ ok=1", bundle);
-                    return YES;
+                // iOS15+ 签名：-[FBSOpenApplicationService openApplication:withOptions:clientHandle:error:]
+                // 私有 selector SDK 不可见 → NSInvocation 构造（宽松、免编译期检查）
+                SEL sel = NSSelectorFromString(@"openApplication:withOptions:clientHandle:error:");
+                if ([svc respondsToSelector:sel]) {
+                    NSMethodSignature *sig = [svc methodSignatureForSelector:sel];
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    [inv setSelector:sel];
+                    [inv setTarget:svc];
+                    [inv setArgument:&handle atIndex:2];
+                    [inv setArgument:&opts atIndex:3];
+                    id nilClient = nil;
+                    [inv setArgument:&nilClient atIndex:4];
+                    NSError *err = nil;
+                    [inv setArgument:&err atIndex:5];
+                    [inv invoke];
+                    if (!err) {
+                        poc_log(@"LAUNCH_FBS sid=%@ ok=1", bundle);
+                        return YES;
+                    }
+                    poc_log(@"LAUNCH_FBS_ERR sid=%@ %@", bundle, err.localizedDescription ?: @"?");
+                } else {
+                    poc_log(@"LAUNCH_FBS_NO_SEL sid=%@ — fallback LS", bundle);
                 }
-                poc_log(@"LAUNCH_FBS_ERR sid=%@ %@", bundle, err.localizedDescription ?: @"?");
             } else {
                 poc_log(@"LAUNCH_FBS_NO_HANDLE sid=%@ — fallback LS", bundle);
             }
