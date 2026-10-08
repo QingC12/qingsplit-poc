@@ -118,8 +118,10 @@ jobs:
               @try {
                   id key = nil, defaults = nil;
                   if (spec) {
-                      key = [spec performSelector:@selector(propertyForKey:) withObject:@"key"];
-                      defaults = [spec performSelector:@selector(propertyForKey:) withObject:@"defaults"];
+                      key = objc_getAssociatedObject(spec, &kKeyAO);
+                      defaults = objc_getAssociatedObject(spec, &kDefaultsAO);
+                      if (!key) key = [spec performSelector:@selector(propertyForKey:) withObject:@"key"];
+                      if (!defaults) defaults = [spec performSelector:@selector(propertyForKey:) withObject:@"defaults"];
                   }
                   qs_log(@"SET_CALLED key=%@ val=%@ defaults=%@\n", key, value, defaults);
                   if (key && defaults) {
@@ -148,7 +150,11 @@ jobs:
               }
               return nil;
           }
-          // 手动构造 PSSpecifier（libprefs 标准 cell 枚举；读回 cellType 校准）
+          // v0.4.54: 手动构造 PSSpecifier
+          // iOS17 cell 枚举实测校准（v0.4.53 日志）：group=6 / switch=3（真开关，可点出 SET_CALLED）/ 2=link（点击进空页）
+          // PSEditTextCell 未知 → 先用 1（下一位候选），若渲染为静态文本/其他下一轮试 5/7
+          // key/defaults 用 associated object 存（propertyForKey: 读回 null，保底写入会失败）
+          static char kKeyAO; static char kDefaultsAO;
           static id qs_mk_spec(Class PS, id target, id dict) {
               NSString *cellStr = [dict objectForKey:@"cell"];
               NSString *label = [dict objectForKey:@"label"];
@@ -157,8 +163,8 @@ jobs:
               int cell = 0;
               if ([cellStr isEqualToString:@"PSGroupCell"]) cell = 6;
               else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 3;
-              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 2;
-              else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 4;
+              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 1;   // 候选 edit（待校准）
+              else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 2;
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
               if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING\n"); return nil; }
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
@@ -176,6 +182,8 @@ jobs:
               if (ph) setProp(spec, spSel, ph, @"placeholder");
               id ft = [dict objectForKey:@"footerText"];
               if (ft) setProp(spec, spSel, ft, @"footerText");
+              if (key) objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              if (defaults) objc_setAssociatedObject(spec, &kDefaultsAO, defaults, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
               return spec;
           }
           static id qs_specifiers(id self, SEL _cmd) {
@@ -309,5 +317,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.53_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.54_iphoneos-arm64e.deb
           if-no-files-found: warn
