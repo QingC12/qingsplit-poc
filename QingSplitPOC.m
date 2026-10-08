@@ -1510,11 +1510,16 @@ static void poc_try_float(void) {
             if (nowT - g_launchPendingAt > 15.0) {
                 if (g_sceneActivationUsed && !g_sceneActivationFallbackDone) {
                     // v0.4.30: 系统级 scene 激活 15s 无 scene → 降级老路径启动一次（黑盒兜底）
+                    // v0.4.32: 同样移到后台线程（LS 同步调用会阻塞主线程）
                     g_sceneActivationFallbackDone = YES;
                     g_launchPending = YES;
                     g_launchPendingAt = CACurrentMediaTime();
-                    BOOL ok = poc_launch_app(wanted);
-                    poc_log(@"LAUNCH_FALLBACK wanted=%@ ok=%d", wanted, ok);
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                        BOOL ok = poc_launch_app(wanted);
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            poc_log(@"LAUNCH_FALLBACK wanted=%@ ok=%d", wanted, ok);
+                        });
+                    });
                 } else {
                     g_launchPending = NO;
                     g_manualSid = nil;
@@ -1906,8 +1911,16 @@ static void poc_picker_select(NSDictionary *app) {
             // 交给系统级激活（UIWindowSceneActivationConfiguration），不再重复启动
             poc_log(@"PICKER_SELECT sid=%@ running=0 sceneAct=1 armed=1", sid);
         } else {
-            BOOL ok = poc_launch_app(sid);
-            poc_log(@"PICKER_SELECT sid=%@ running=0 launch=%d armed=1", sid, ok);
+            // v0.4.32: LS openApplicationWithBundleID: 是同步调用，大 app 冷启动会阻塞主线程 10s+（QQ邮箱实测）
+            // → 移到后台线程，主线程立即返回：提示条正常渲染、UI 不卡；tick 照常轮询 scene
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                BOOL ok = poc_launch_app(sid);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (g_manualSid && [g_manualSid isEqualToString:sid]) {
+                        poc_log(@"PICKER_SELECT_ASYNC sid=%@ launch=%d armed=1", sid, ok);
+                    }
+                });
+            });
         }
     }
     poc_picker_hide();
@@ -2237,7 +2250,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.31 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.32 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
