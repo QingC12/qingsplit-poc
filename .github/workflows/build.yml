@@ -271,8 +271,12 @@ jobs:
               //（v0.4.53 传 6 渲染成 PSSwitchTableCell+UISwitch 且可点出 SET_CALLED；传 3 渲染成 group 不可点，用户只见 2 个"开关"= 2 个 group）
               if ([cellStr isEqualToString:@"PSGroupCell"]) cell = 3;
               else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 6;
-              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 0;   // 候选 edit（1/2 已证是 link 进空页；0 待渲染探针校准）
+              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 0;   // 候选 edit（1/2 已证是 link 进空页；0 渲染异常无 CELL_RENDER）
               else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 2;
+              if ([cellStr isEqualToString:@"PSEditTextCell"]) {
+                  // v0.4.62: 直接指定 cellClass，绕过 iOS17 cellType 枚举盲区（0/1/2 均非输入框）
+                  [spec setProperty:@"PSEditTextTableCell" forKey:@"cellClass"];
+              }
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
               if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING\n"); return nil; }
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
@@ -469,5 +473,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.61_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.62_iphoneos-arm64e.deb
           if-no-files-found: warn
