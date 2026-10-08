@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+	<dict>
+		<key>cell</key>
+		<string>PSGroupCell</string>
+		<key>footerText</key>
+		<string>窗口行为设置。修改后需重启 SpringBoard 生效。</string>
+	</dict>
+	<dict>
+		<key>cell</key>
+		<string>PSSwitchCell</string>
+		<key>label</key>
+		<string>启用悬浮窗</string>
+		<key>key</key>
+		<string>enabled</string>
+		<key>defaults</key>
+		<string>com.qingsplit.poc</string>
+		<key>default</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>cell</key>
+		<string>PSSwitchCell</string>
+		<key>label</key>
+		<string>半屏吸附</string>
+		<key>key</key>
+		<string>halfSnap</string>
+		<key>defaults</key>
+		<string>com.qingsplit.poc</string>
+		<key>default</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>cell</key>
+		<string>PSSwitchCell</string>
+		<key>label</key>
+		<string>边缘吸附</string>
+		<key>key</key>
+		<string>edgeSnap</string>
+		<key>defaults</key>
+		<string>com.qingsplit.poc</string>
+		<key>default</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>cell</key>
+		<string>PSSwitchCell</string>
+		<key>label</key>
+		<string>主屏回退</string>
+		<key>key</key>
+		<string>screenHide</string>
+		<key>defaults</key>
+		<string>com.qingsplit.poc</string>
+		<key>default</key>
+		<true/>
+	</dict>
+	<dict>
+		<key>cell</key>
+		<string>PSSwitchCell</string>
+		<key>label</key>
+		<string>关闭按钮</string>
+		<key>key</key>
+		<string>closeBtn</string>
+		<key>defaults</key>
+		<string>com.qingsplit.poc</string>
+		<key>default</key>
+		<true/>
+	</dict>
+</array>
+</plist>

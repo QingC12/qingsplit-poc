@@ -29,7 +29,7 @@ PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
 PREFS_SRC = os.path.join(BASE, "QingSplitPrefs.plist")
 PREFS_BUNDLE_DIR = os.path.join(BASE, "QingSplitPrefs.bundle")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.4.47_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.4.48_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
@@ -40,6 +40,7 @@ PREFS_BUNDLE_ROOT_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle
 PREFS_BUNDLE_EXE_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/QingSplitPrefs"
 PREFS_BUNDLE_INFO_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Info.plist"
 PREFS_BUNDLE_TARGETS_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Targets.plist"
+PREFS_BUNDLE_BEHAVIOR_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/QingSplitBehavior.plist"
 
 def ar_member(name, data, mode=0o100644):
     mtime = int(time.time())
@@ -110,6 +111,7 @@ def main():
         (PREFS_BUNDLE_EXE_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitPrefs"), False, 0o755),
         (PREFS_BUNDLE_INFO_DEST, os.path.join(PREFS_BUNDLE_DIR, "Info.plist"), False, 0o644),
         (PREFS_BUNDLE_TARGETS_DEST, os.path.join(PREFS_BUNDLE_DIR, "Targets.plist"), False, 0o644),
+        (PREFS_BUNDLE_BEHAVIOR_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitBehavior.plist"), False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
 

@@ -92,52 +92,24 @@ jobs:
               } @catch (NSException *e) {}
           }
 
-          // v0.4.47: 回退全量构造（preferenceSpecifierNamed: 存在且 v0.4.45 渲染正常）
-          // crash 根因：v0.4.46 的便捷方法 switchSpecifierWithTitle:/groupSpecifierWithName: 在 iOS 17 不存在 → unrecognized selector → Settings 闪退
-          // cell 枚举用 v0.4.45 实测值：4=switch（真开关）、8=group、2=link
-          // 目标 App 改 link(2)+PSChildPaneSpecifier+file=Targets → 子页 plist 由 framework 原生解析（PSEditTextCell 字符串映射绝对正确）
-          // 开关：覆写 setPreferenceValue:specifier: 记 SET_CALLED + 手动写 defaults 保底 + 调 super
+          // v0.4.48: 主页面只保留 link 子页入口——开关全部挪进子页 plist（PSSwitchCell 字符串）
+          // 子页由 Settings 原生解析（FloatingView 同结构），开关点击由 framework 处理，不再经过动态构造
+          // （v0.4.45/47 实测：动态 switch cell=4 渲染正确但点击无 SET_CALLED → iOS17 不回调动态 target/setter）
           static id qs_prop(id spec, id value, NSString *key) {
               void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
               setProp(spec, NSSelectorFromString(@"setProperty:forKey:"), value, key);
           }
-          static id qs_mk(Class PS, id name, id target, SEL setSel, SEL getSel, Class detail, int cell) {
+          static id qs_mk(Class PS, id name, Class detail, int cell) {
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
               if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING preferenceSpecifierNamed\n"); return nil; }
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
-              return mk(PS, mkSel, name, target, setSel, getSel, detail, cell, nil);
+              return mk(PS, mkSel, name, nil, NULL, NULL, detail, cell, nil);
           }
-          static id qs_switch_spec(Class PS, id target, SEL setSel, SEL getSel, NSString *label, NSString *key) {
-              id s = qs_mk(PS, label, target, setSel, getSel, nil, 4);   // 4=switch（v0.4.45 实测）
-              if (!s) { qs_log(@"SWITCH_BUILD_FAIL %@\n", key); return nil; }
-              qs_prop(s, key, @"key");
-              qs_prop(s, @"com.qingsplit.poc", @"defaults");
-              qs_prop(s, @YES, @"default");
-              return s;
-          }
-          static id qs_group_spec(Class PS, id target, SEL setSel, SEL getSel, NSString *footer) {
-              id g = qs_mk(PS, @"", target, setSel, getSel, nil, 8);     // 8=group（v0.4.45 实测）
-              if (!g) { qs_log(@"GROUP_BUILD_FAIL\n"); return nil; }
-              if (footer.length) qs_prop(g, footer, @"footerText");
-              return g;
-          }
-          // 开关写入覆写：记录 + 手动写 defaults 保底 + 调 PSListController 原实现
-          static void qs_set_value(id self, SEL _cmd, id value, id spec) {
-              @try {
-                  id key = [spec performSelector:@selector(propertyForKey:) withObject:@"key"];
-                  id defaults = [spec performSelector:@selector(propertyForKey:) withObject:@"defaults"];
-                  qs_log(@"SET_CALLED key=%@ val=%@ defaults=%@\n", key, value, defaults);
-                  if (key && defaults) {
-                      NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:defaults];
-                      [ud setObject:value forKey:key];
-                      [ud synchronize];
-                  }
-              } @catch (NSException *e) { qs_log(@"SET_EXC %@\n", e.name); }
-              Class ps = NSClassFromString(@"PSListController");
-              if (ps) {
-                  struct objc_super su = { self, ps };
-                  ((void(*)(struct objc_super *, SEL, id, id))objc_msgSendSuper)(&su, _cmd, value, spec);
-              }
+          static id qs_link(Class PS, NSString *label, NSString *file) {
+              id l = qs_mk(PS, label, NSClassFromString(@"PSChildPaneSpecifier"), 2);  // 2=link（v0.4.45 实测）
+              if (!l) { qs_log(@"LINK_BUILD_FAIL %@\n", label); return nil; }
+              qs_prop(l, file, @"file");
+              return l;
           }
           static id qs_specifiers(id self, SEL _cmd) {
               qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
@@ -146,35 +118,16 @@ jobs:
               if (!sp) {
                   Class PS = NSClassFromString(@"PSSpecifier");
                   if (PS) {
-                      SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
-                      SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
+                      id g = qs_mk(PS, @"", nil, 8);  // 8=group（v0.4.45 实测）
+                      if (g) qs_prop(g, @"类 Stheno 浮动窗口（POC）。设置项在子页面，修改后需重启 SpringBoard 生效。", @"footerText");
 
-                      id g1 = qs_group_spec(PS, self, setSel, getSel, @"类 Stheno 浮动窗口（POC）。修改设置后需重启 SpringBoard 生效。");
-                      id sw = qs_switch_spec(PS, self, setSel, getSel, @"启用悬浮窗", @"enabled");
-
-                      // 目标 App：link(2) + PSChildPaneSpecifier → 子页 Targets.plist（framework 原生解析）
-                      id tf = qs_mk(PS, @"目标 App", self, NULL, NULL, NSClassFromString(@"PSChildPaneSpecifier"), 2);
-                      if (tf) {
-                          qs_prop(tf, @"Targets", @"file");
-                      } else {
-                          qs_log(@"TARGET_LINK_BUILD_FAIL\n");
-                      }
-
-                      id g2 = qs_group_spec(PS, self, setSel, getSel, @"窗口行为");
-                      id h = qs_switch_spec(PS, self, setSel, getSel, @"半屏吸附", @"halfSnap");
-                      id e = qs_switch_spec(PS, self, setSel, getSel, @"边缘吸附", @"edgeSnap");
-                      id sh = qs_switch_spec(PS, self, setSel, getSel, @"主屏回退", @"screenHide");
-                      id cb = qs_switch_spec(PS, self, setSel, getSel, @"关闭按钮", @"closeBtn");
+                      id tf = qs_link(PS, @"目标 App", @"Targets");
+                      id bh = qs_link(PS, @"窗口行为", @"QingSplitBehavior");
 
                       NSMutableArray *arr = [NSMutableArray array];
-                      if (g1) [arr addObject:g1]; else qs_log(@"GROUP_MISSING g1\n");
-                      if (sw) [arr addObject:sw]; else qs_log(@"SWITCH_MISSING enabled\n");
-                      if (tf) [arr addObject:tf]; else qs_log(@"EDIT_MISSING targets\n");
-                      if (g2) [arr addObject:g2]; else qs_log(@"GROUP_MISSING g2\n");
-                      if (h) [arr addObject:h]; else qs_log(@"SWITCH_MISSING halfSnap\n");
-                      if (e) [arr addObject:e]; else qs_log(@"SWITCH_MISSING edgeSnap\n");
-                      if (sh) [arr addObject:sh]; else qs_log(@"SWITCH_MISSING screenHide\n");
-                      if (cb) [arr addObject:cb]; else qs_log(@"SWITCH_MISSING closeBtn\n");
+                      if (g) [arr addObject:g]; else qs_log(@"GROUP_MISSING\n");
+                      if (tf) [arr addObject:tf]; else qs_log(@"LINK_MISSING Targets\n");
+                      if (bh) [arr addObject:bh]; else qs_log(@"LINK_MISSING QingSplitBehavior\n");
                       sp = arr;
                       qs_log(@"SPECIFIERS_BUILT count=%lu\n", (unsigned long)[sp count]);
                   } else {
@@ -187,6 +140,7 @@ jobs:
               return sp;
           }
 
+
           __attribute__((constructor))
           static void qs_prefs_bundle_init(void) {
               qs_log(@"PREFS_BUNDLE_LOADED pid=%d\n", getpid());
@@ -195,8 +149,6 @@ jobs:
               Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
               if (sub) {
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
-                  // v0.4.47: 覆写 setPreferenceValue:specifier:（开关写入可观测 + 保底）
-                  class_addMethod(sub, NSSelectorFromString(@"setPreferenceValue:specifier:"), (IMP)qs_set_value, "v@:@@");
                   objc_registerClassPair(sub);
                   qs_log(@"CLASS_REGISTERED QingSplitPrefsRootListController\n");
               } else {
@@ -241,5 +193,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.47_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.48_iphoneos-arm64e.deb
           if-no-files-found: warn
