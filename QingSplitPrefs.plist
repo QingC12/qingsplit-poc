@@ -10,10 +10,6 @@
 		<string>QingSplit</string>
 		<key>bundle</key>
 		<string>QingSplitPrefs</string>
-		<key>detail</key>
-		<string>QingSplitPrefsRootListController</string>
-		<key>isController</key>
-		<true/>
 	</dict>
 	<key>title</key>
 	<string>QingSplit</string>
