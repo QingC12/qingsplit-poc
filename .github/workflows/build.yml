@@ -115,25 +115,66 @@ jobs:
           }
           static char kKeyAO; static char kDefaultsAO;
           static IMP qs_orig_setpref = NULL;
+          static IMP qs_orig_readpref = NULL;
+          // v0.4.55: 开关写入 —— iOS17 点击开关时传入的 spec 是内部对象（AO/propertyForKey 均读不到 key）
+          // key 改从 identifier 读（构造时 set 的 qs_<key>，iOS 必保留）；写入直接落 SpringBoard 读取的同一 plist 文件
+          static NSString *qs_cfg_path(void) {
+              return @"/var/mobile/Library/Preferences/com.qingsplit.poc.plist";
+          }
+          static void qs_write_cfg(NSString *key, id value) {
+              NSString *path = qs_cfg_path();
+              NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+              if (!d) d = [NSMutableDictionary dictionary];
+              d[key] = value;
+              if (![d writeToFile:path atomically:YES]) {
+                  NSString *p2 = @"/var/mobile/Documents/com.qingsplit.poc.plist";
+                  NSMutableDictionary *d2 = [NSMutableDictionary dictionaryWithContentsOfFile:p2];
+                  if (!d2) d2 = [NSMutableDictionary dictionary];
+                  d2[key] = value;
+                  [d2 writeToFile:p2 atomically:YES];
+              }
+          }
           static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
               @try {
-                  id key = nil, defaults = nil;
+                  id key = nil;
                   if (spec) {
-                      key = objc_getAssociatedObject(spec, &kKeyAO);
-                      defaults = objc_getAssociatedObject(spec, &kDefaultsAO);
-                      if (!key) key = [spec performSelector:@selector(propertyForKey:) withObject:@"key"];
-                      if (!defaults) defaults = [spec performSelector:@selector(propertyForKey:) withObject:@"defaults"];
+                      key = [spec valueForKey:@"identifier"];
+                      if ([key isKindOfClass:[NSString class]] && [key hasPrefix:@"qs_"]) {
+                          key = [key substringFromIndex:3];
+                      } else {
+                          key = nil;
+                          id ao = objc_getAssociatedObject(spec, &kKeyAO);
+                          if (ao) key = ao;
+                      }
                   }
-                  qs_log(@"SET_CALLED key=%@ val=%@ defaults=%@\n", key, value, defaults);
-                  if (key && defaults) {
-                      NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:defaults];
-                      [ud setObject:value forKey:key];
-                      [ud synchronize];
-                  }
+                  qs_log(@"SET_CALLED key=%@ val=%@ defaults=com.qingsplit.poc\n", key, value);
+                  if (key) qs_write_cfg(key, value);
               } @catch (NSException *e) { qs_log(@"SET_EXC %@\n", e.name); }
               if (qs_orig_setpref) {
-                  ((void(*)(id, SEL, id, id))qs_orig_setpref)(self, _cmd, value, spec);
+                  @try { ((void(*)(id, SEL, id, id))qs_orig_setpref)(self, _cmd, value, spec); }
+                  @catch (NSException *e) { qs_log(@"ORIG_SET_EXC %@\n", e.name); }
               }
+          }
+          // readPreferenceValue: —— 开关读回（非 qs_ spec 走 original，避免影响全局设置页）
+          static id qs_readpref(id self, SEL _cmd, id specifier) {
+              @try {
+                  NSString *key = nil;
+                  if (specifier) {
+                      id ident = [specifier valueForKey:@"identifier"];
+                      if ([ident isKindOfClass:[NSString class]] && [ident hasPrefix:@"qs_"]) {
+                          key = [ident substringFromIndex:3];
+                      }
+                  }
+                  if (key) {
+                      NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:qs_cfg_path()];
+                      if (d && d[key]) {
+                          qs_log(@"READ_CFG key=%@ val=%@\n", key, d[key]);
+                          return d[key];
+                      }
+                  }
+              } @catch (NSException *e) { qs_log(@"READ_EXC %@\n", e.name); }
+              if (qs_orig_readpref) return qs_orig_readpref(self, _cmd, specifier);
+              return nil;
           }
           // v0.4.53: bundleWithPath 硬编码路径在 Preferences 进程不可见（BUNDLE_PATH_FAIL）
           // 从 dyld image 推导 bundle 路径（executable 已加载，其路径一定可见）；再优先 loadSpecifiersFromPlistName:target:bundle:
@@ -182,7 +223,11 @@ jobs:
               if (ph) setProp(spec, spSel, ph, @"placeholder");
               id ft = [dict objectForKey:@"footerText"];
               if (ft) setProp(spec, spSel, ft, @"footerText");
-              if (key) objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              if (key) {
+                  objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                  // identifier 存 qs_<key>：iOS 必保留（cell reuse），写入/读回都从它取 key
+                  setProp(spec, spSel, [@"qs_" stringByAppendingString:key], @"identifier");
+              }
               if (defaults) objc_setAssociatedObject(spec, &kDefaultsAO, defaults, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
               return spec;
           }
@@ -270,6 +315,23 @@ jobs:
               } else {
                   qs_log(@"SET_METHOD_MISSING\n");
               }
+              // readPreferenceValue swizzle：开关读回（非 qs_ spec 走 original）
+              Method mr = class_getInstanceMethod(ps, NSSelectorFromString(@"readPreferenceValue:"));
+              if (mr) {
+                  qs_orig_readpref = method_getImplementation(mr);
+                  method_setImplementation(mr, (IMP)qs_readpref);
+                  qs_log(@"READ_SWIZZLED\n");
+              } else {
+                  qs_log(@"READ_METHOD_MISSING\n");
+              }
+              // 初始化默认 plist（不存在则写，保证 SpringBoard 侧有默认值可读）
+              NSString *cfgPath = qs_cfg_path();
+              if (![[NSFileManager defaultManager] fileExistsAtPath:cfgPath]) {
+                  NSDictionary *def = @{ @"enabled": @YES, @"targets": @"", @"halfSnap": @YES,
+                                         @"edgeSnap": @YES, @"screenHide": @YES, @"closeBtn": @YES };
+                  [def writeToFile:cfgPath atomically:YES];
+                  qs_log(@"CFG_DEFAULT_WRITTEN\n");
+              }
               Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
               if (sub) {
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
@@ -317,5 +379,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.54_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.55_iphoneos-arm64e.deb
           if-no-files-found: warn

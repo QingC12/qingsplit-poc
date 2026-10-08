@@ -673,9 +673,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     poc_log(@"CLOSE_TAP");
     poc_close_float();
 }
-// v0.4.37: 底部拖动按钮点击 → 切换吸附（未吸附→吸附最近边缘；吸附→恢复吸附前）
+// v0.4.55: 半屏吸附开关 —— 关闭后底部按钮不再吸附（仅浮动态移动）
 - (void)onBottomTap:(id)sender {
     @try {
+        if (!poc_setting_bool(@"halfSnap", YES)) return;
         if (_halfSnapped) {
             CGRect pf = _preSnapFrame;
             if (pf.size.width <= 0 || pf.size.height <= 0) pf = CGRectMake(60, 120, 300, 500);
@@ -2387,7 +2388,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.54 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.55 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
