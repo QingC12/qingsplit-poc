@@ -1051,6 +1051,8 @@ static CGFloat g_pickerRowH = 50;       // v0.4.22: 自适应行高（铺满触�
 static UIScrollView *g_pickerScroll = nil;   // v0.4.25: 选择器滚动列表（全部应用）
 static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene id（前缀匹配）
 static BOOL g_triggerArmed = NO;
+static const char *g_targetSid = NULL;   // v0.4.39: RENDER_FAIL 诊断（最近目标 scene id）
+static NSInteger g_targetLc = -1;        // v0.4.39: RENDER_FAIL 诊断（最近 layerCount）
 static BOOL g_launchPending = NO;        // v0.4.24: 已选择未运行应用 → 启动后等待 scene 出现
 static NSTimeInterval g_launchPendingAt = 0;
 static BOOL g_sceneActivationUsed = NO;          // v0.4.30: 本次选择器是否已走系统级 scene 激活（UIWindowSceneActivationConfiguration）
@@ -1590,6 +1592,8 @@ static void poc_try_float(void) {
     NSString *lmCls = target[@"lmCls"];
     NSString *layersKind = target[@"layersKind"];
     NSString *layerType = layer ? poc_str(poc_tryKVC(layer, @[@"_type", @"type"])) : @"nil";
+    g_targetSid = sid.UTF8String ?: "";   // v0.4.39: RENDER_FAIL 诊断数据
+    g_targetLc = layerCount;
     poc_log(@"TARGET sid=%@ pid=%ld lm=%@ layersKind=%@ layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
             sid, (long)pid, lmCls, layersKind, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
 
@@ -1624,12 +1628,13 @@ static void poc_try_float(void) {
         }
     }
     if (!hv) {
-        // v0.4.31: RENDER_FAIL 日志节流（scene 刚出现但 layer 未就绪时，0.5s tick 会连续触发刷屏）
+        // v0.4.39: RENDER_FAIL 诊断 —— 3s 节流 + 附目标信息（定位"有的应用不能触发"）
         static NSTimeInterval lastFailLog = 0;
         NSTimeInterval nowT = CACurrentMediaTime();
-        if (nowT - lastFailLog >= 5.0) {
+        if (nowT - lastFailLog >= 3.0) {
             lastFailLog = nowT;
-            poc_log(@"RENDER_FAIL all paths failed — POC ABORT (no write ops performed)");
+            poc_log(@"RENDER_FAIL all paths failed — POC ABORT (no write ops performed) sid=%s lc=%ld",
+                    g_targetSid ? g_targetSid : "nil", (long)g_targetLc);
         }
         return;
     }
@@ -1905,53 +1910,75 @@ static NSArray *poc_all_apps(void) {
     return sortedNotRun;
 }
 
-// v0.4.38: 图标取用重做 —— LSApplicationProxy iconDataForVariant: 变体名不可靠（多版本图标为空）；
-// 改为 bundleURL 直读 CFBundleIconFiles（NSBundle pathForResource 自动匹配 @2x/@3x），
-// 失败再兜底 iconDataForVariant:。借鉴 FloatingView/ScreenCore 图标数据源（LSApplicationProxy）
+// v0.4.39: 图标取用重做 —— ① bundleURL 直读 CFBundleIconFiles（含诊断日志 ICON_DIAG）；
+// ② 兜底 iconDataForVariant:scale:（真签名为 (NSInteger variant, CGFloat scale)，遍历 variant 0-5）
 static UIImage *poc_picker_icon(NSString *bid) {
     if (!bid.length) return nil;
     if (!g_pickerIconCache) g_pickerIconCache = [NSMutableDictionary dictionary];
     UIImage *cached = g_pickerIconCache[bid];
     if (cached) return cached;
     UIImage *icon = nil;
-    // 路径 1：bundleURL → CFBundleIconFiles（最可靠）
-    @try {
-        id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
-        if (proxy) {
-            NSURL *burl = nil;
-            @try { burl = [proxy performSelector:@selector(bundleURL)]; } @catch (NSException *e) { }
-            NSString *bpath = burl.path;
-            NSBundle *b = bpath.length ? [NSBundle bundleWithPath:bpath] : nil;
-            NSDictionary *info = b.infoDictionary;
-            NSArray *files = nil;
+    // 路径 1：bundleURL → CFBundleIconFiles（诊断各环节，避免静默失败）
+    id proxy = nil;
+    @try { proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:bid]; } @catch (NSException *e) { }
+    if (proxy) {
+        NSURL *burl = nil;
+        @try { burl = [proxy performSelector:@selector(bundleURL)]; } @catch (NSException *e) { }
+        NSString *bpath = burl.path;
+        NSDictionary *info = nil;
+        NSArray *files = nil;
+        NSString *res = nil;
+        if (bpath.length) {
+            NSBundle *b = [NSBundle bundleWithPath:bpath];
+            info = b.infoDictionary;
             if (info[@"CFBundleIcons"] && info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"]) {
                 files = info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"];
             }
             if (!files.count) files = info[@"CFBundleIconFiles"];
-            if (!files.count && info[@"CFBundleIcons"][@"CFBundleAlternateIcons"]) {
-                files = [info[@"CFBundleIcons"][@"CFBundleAlternateIcons"] allValues][0][@"CFBundleIconFiles"];
+            if (!files.count && info[@"CFBundleIcons"] && info[@"CFBundleIcons"][@"CFBundleAlternateIcons"]) {
+                NSDictionary *alt = info[@"CFBundleIcons"][@"CFBundleAlternateIcons"];
+                NSArray *vals = [alt allValues];
+                if (vals.count) files = vals[0][@"CFBundleIconFiles"];
             }
-            if (files.count) {
-                NSString *res = [b pathForResource:files[0] ofType:nil];   // pathForResource 自动匹配 @2x/@3x
-                if (!res && files.count > 1) res = [b pathForResource:files[1] ofType:nil];
-                if (res) icon = [UIImage imageWithContentsOfFile:res];
-            }
-        }
-    } @catch (NSException *e) { icon = nil; }
-    // 路径 2：iconDataForVariant:（兜底）
-    if (!icon) {
-        @try {
-            id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
-            if (proxy) {
-                NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
-                if (!([d isKindOfClass:[NSData class]] && d.length)) {
-                    SEL s2 = sel_registerName("iconDataForVariant:scale:");
-                    if ([proxy respondsToSelector:s2]) {
-                        NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
-                        d = fn(proxy, s2, @"2x", 2.0);
+            // 逐个尝试（pathForResource 自动匹配 @2x/@3x；失败再手动拼文件名检查）
+            for (NSString *f in files) {
+                if (![f isKindOfClass:[NSString class]]) continue;
+                res = [b pathForResource:f ofType:nil];
+                if (res) break;
+                NSArray *suffixes = @[@"", @"@2x", @"@3x"];
+                for (NSString *suf in suffixes) {
+                    for (NSString *ext in @[@"png", @"PNG", @"jpg"]) {
+                        NSString *cand = [b.bundlePath stringByAppendingPathComponent:
+                                          [NSString stringWithFormat:@"%@%@.%@", f, suf, ext]];
+                        if ([[NSFileManager defaultManager] fileExistsAtPath:cand]) { res = cand; break; }
                     }
+                    if (res) break;
                 }
-                if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
+                if (res) break;
+            }
+            if (res) icon = [UIImage imageWithContentsOfFile:res];
+        }
+        poc_log(@"ICON_DIAG %@ proxy=%d burl=%d path=%@ info=%d files=%ld res=%d",
+                bid, 1, burl != nil, bpath.length ? bpath.lastPathComponent : @"nil",
+                info != nil, (long)(files ? files.count : 0), res != nil);
+    }
+    // 路径 2：iconDataForVariant:scale:（NSInteger, CGFloat）—— 遍历 variant 0-5
+    if (!icon && proxy) {
+        @try {
+            SEL s = sel_registerName("iconDataForVariant:scale:");
+            if ([proxy respondsToSelector:s]) {
+                NSData *(*fn)(id, SEL, NSInteger, CGFloat) = (NSData *(*)(id, SEL, NSInteger, CGFloat))objc_msgSend;
+                for (NSInteger v = 0; v <= 5; v++) {
+                    NSData *d = fn(proxy, s, v, 2.0);
+                    if ([d isKindOfClass:[NSData class]] && d.length) { icon = [UIImage imageWithData:d]; break; }
+                }
+            } else {
+                // 旧式字符串变体兜底
+                SEL s2 = sel_registerName("iconDataForVariant:");
+                if ([proxy respondsToSelector:s2]) {
+                    NSData *d = [proxy performSelector:s2 withObject:@"2x"];
+                    if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
+                }
             }
         } @catch (NSException *e) { icon = nil; }
     }
@@ -2109,9 +2136,9 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.36: 右缘触发条（24px 宽 × 260 高，屏幕中部偏上）—— Arc 菜单触发起点
-        // v0.4.20 原始 20×150 y=391；v0.4.36 加宽加高、提亮 alpha（用户反馈红线不可见）
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 24, 336, 24, 260)];
+        // v0.4.39: 右缘触发条（14px 宽 × 280 高，屏幕高度 30%，位置右缘下方）—— Arc 菜单触发起点
+        // v0.4.20 原始 20×150 y=391；v0.4.36 加宽加高提亮；v0.4.39 按用户要求改细改短、移到下方 30%
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 14, 932 - 280 - 52, 14, 280)];
         strip.tag = 778;   // v0.4.28: backdrop 需要定位并提到最上
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
         strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.28 blue:0.28 alpha:0.28];   // 触发区提示（红线）
@@ -2270,13 +2297,7 @@ static void poc_setup_edge_trigger(void) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
         }
-        // v0.4.35: 面板跟手 —— 滑出后面板 y 跟随手指（单手连贯：滑出→上下滑→松手选中）
-        if (g_pickerPanel && !g_pickerPanel.hidden) {
-            CGFloat pH = g_pickerPanel.bounds.size.height;
-            CGFloat ny = p.y - pH / 2.0;
-            ny = MAX(60.0, MIN(ny, 932.0 - pH - 20.0));   // clamp 屏幕内
-            g_pickerPanel.center = CGPointMake(g_pickerPanel.center.x, ny);
-        }
+        // v0.4.39: 选择器固定 —— 面板不再跟手（用户反馈来回移动不舒服），位置固定（panelY=140）
         // v0.4.38: Arc 高亮 —— 右缘圆心 (pw,155)，R=140，θ 110°→250°，角度匹配最近图标
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerApps.count) {
             CGRect pf = g_pickerPanel.frame;
@@ -2364,7 +2385,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.38 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.39 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
