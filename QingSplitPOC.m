@@ -617,62 +617,32 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         [self addGestureRecognizer:_scalePan];
         [self addGestureRecognizer:_longPress];
         [self addGestureRecognizer:_doubleTap];
-        // v0.3.8: 左下/右下角缩放把手（纯视觉指示，不拦截触摸）；v0.3.15: 缩小到 20×20 跟随角落区
-        [self addCornerKnob:CGRectMake(12, self.bounds.size.height - 32, 20, 20)];
-        [self addCornerKnob:CGRectMake(self.bounds.size.width - 32, self.bounds.size.height - 32, 20, 20)];
+        // v0.4.38: 移除角落缩放把手视觉指引（功能保留，热区透明）
         // v0.3.16: 右上角关闭按钮（明确关闭机制，仅移除浮窗不动 Scene）
         [self addCloseButton];
-        // v0.4.14: 全部手势可视指示（拖动/重置），风格与把手/关闭一致（白色半透明圆角，不拦截触摸）
+        // v0.4.38: 手势指引精简 —— 仅底部吸附小圆点（功能入口）+ 顶部恢复热区（透明）
         [self addGestureIndicators];
     }
     return self;
 }
-// v0.4.14: 手势可视指示 —— 顶部=拖动横条+↻重置图标，底部=拖动横条，左右边缘=竖条
+// v0.4.38: 手势指引精简 —— 移除拖动条/重置图标/边缘竖条（用户要求只保留关闭按钮指引）；
+// 吸附入口改为底部 16×16 半透明小圆点（低调），顶部恢复热区透明
 - (void)addGestureIndicators {
-    UIColor *c = [UIColor colorWithWhite:1.0 alpha:0.65];
-    CGFloat radius = 2.5;
-    // 顶部条：拖动横条（居中）+ 重置图标（右侧避开关闭按钮）
-    _gripTop = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 32, 5)];
-    _gripTop.backgroundColor = c;
-    _gripTop.layer.cornerRadius = radius;
-    _gripTop.userInteractionEnabled = NO;
-    [self addSubview:_gripTop];
-    _resetBadge = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 24, 24)];
-    _resetBadge.text = @"↻";
-    _resetBadge.textColor = c;
-    _resetBadge.font = [UIFont boldSystemFontOfSize:14];
-    _resetBadge.textAlignment = NSTextAlignmentCenter;
-    _resetBadge.userInteractionEnabled = NO;
-    [self addSubview:_resetBadge];
-    // 底部条：拖动横条（居中，稍粗）—— v0.4.37: 点击切换吸附（按钮化，扩大热区）
-    _gripBottom = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 64, 24)];
-    _gripBottom.backgroundColor = c;
+    // 底部吸附小圆点（低调）：点击 → 吸附 toggle
+    _gripBottom = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 16, 16)];
+    _gripBottom.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.5];
     _gripBottom.layer.cornerRadius = 8;
-    _gripBottom.userInteractionEnabled = YES;   // v0.4.37: 可点 → 吸附 toggle
-    _gripBottom.alpha = 0.8;
+    _gripBottom.userInteractionEnabled = YES;
     UITapGestureRecognizer *bt = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onBottomTap:)];
     [_gripBottom addGestureRecognizer:bt];
     [self addSubview:_gripBottom];
-    // v0.4.37: 顶部吸附恢复热区（吸附态点击 → 恢复吸附前大小/位置）
-    // 顶部条本体仍为指示（gripTop 32×5），在其上方叠加透明 tap 热区（44×24）
-    _gripTop.userInteractionEnabled = NO;
+    // 顶部恢复热区（透明）：吸附态点击 → 恢复吸附前大小/位置
     UIButton *topBtn = [UIButton buttonWithType:UIButtonTypeCustom];
     topBtn.frame = CGRectMake(0, 0, 44, 26);
     topBtn.backgroundColor = [UIColor clearColor];
     topBtn.tag = 779;
     [topBtn addTarget:self action:@selector(onTopTap:) forControlEvents:UIControlEventTouchUpInside];
     [self addSubview:topBtn];
-    // 左右边缘：竖条（垂直居中）
-    _gripLeft = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 5, 36)];
-    _gripLeft.backgroundColor = c;
-    _gripLeft.layer.cornerRadius = radius;
-    _gripLeft.userInteractionEnabled = NO;
-    [self addSubview:_gripLeft];
-    _gripRight = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 5, 36)];
-    _gripRight.backgroundColor = c;
-    _gripRight.layer.cornerRadius = radius;
-    _gripRight.userInteractionEnabled = NO;
-    [self addSubview:_gripRight];
     [self setNeedsLayout];
 }
 // v0.3.16: 关闭按钮 —— 右上角 44×44 热区 + 白圆 × 视觉。点击 → 只移除浮窗（不杀 Scene）
@@ -764,15 +734,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (_knobL) _knobL.frame = CGRectMake(12, b.size.height - 32, 20, 20);
     if (_knobR) _knobR.frame = CGRectMake(b.size.width - 32, b.size.height - 32, 20, 20);
     if (_closeBtn) _closeBtn.frame = CGRectMake(b.size.width - 44, 0, 44, 44);
-    // v0.4.14: 手势指示跟随 bounds
-    if (_gripTop) _gripTop.frame = CGRectMake((b.size.width - 32) / 2.0, 19, 32, 5);
-    if (_resetBadge) _resetBadge.frame = CGRectMake(b.size.width - 66, 2, 24, 24);
-    // v0.4.37: 底部吸附按钮（64×24 热区，居中底部）+ 顶部恢复热区（44×26，居中顶部）
-    if (_gripBottom) _gripBottom.frame = CGRectMake((b.size.width - 64) / 2.0, b.size.height - 34, 64, 24);
+    // v0.4.14: 手势指示跟随 bounds —— v0.4.38: 仅底部吸附小圆点 + 顶部恢复热区
     UIView *topBtn = [self viewWithTag:779];
     if (topBtn) topBtn.frame = CGRectMake((b.size.width - 44) / 2.0, 0, 44, 26);
-    if (_gripLeft) _gripLeft.frame = CGRectMake(5, (b.size.height - 36) / 2.0, 5, 36);
-    if (_gripRight) _gripRight.frame = CGRectMake(b.size.width - 10, (b.size.height - 36) / 2.0, 5, 36);
+    if (_gripBottom) _gripBottom.frame = CGRectMake((b.size.width - 16) / 2.0, b.size.height - 26, 16, 16);
     UIView *cv = self.contentView;
     if (!cv) return;
     // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
@@ -797,10 +762,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 }
 // v0.4.34: 统一手势 chrome 显隐（全屏态隐藏：把手/角标/重置徽标/关闭按钮除外的指示全藏）
 - (void)setGestureChromeVisible:(BOOL)vis {
-    for (UIView *v in @[_gripTop, _gripBottom, _gripLeft, _gripRight, _resetBadge]) {
-        if (v) v.hidden = !vis;
-    }
-    // 全屏时关闭按钮保留（可随时退出/关闭），但移到右上角边缘
+    // v0.4.38: 手势指引已移除 —— 底部吸附小圆点保持可见（功能入口），仅调整关闭按钮位置
     if (_closeBtn) {
         _closeBtn.hidden = NO;
         if (!vis) _closeBtn.frame = CGRectMake(self.bounds.size.width - 52, 6, 44, 44);
@@ -1943,28 +1905,58 @@ static NSArray *poc_all_apps(void) {
     return sortedNotRun;
 }
 
-// v0.4.29: 图标取用（LSApplicationProxy 链，后台线程安全）+ bundle→UIImage 缓存
+// v0.4.38: 图标取用重做 —— LSApplicationProxy iconDataForVariant: 变体名不可靠（多版本图标为空）；
+// 改为 bundleURL 直读 CFBundleIconFiles（NSBundle pathForResource 自动匹配 @2x/@3x），
+// 失败再兜底 iconDataForVariant:。借鉴 FloatingView/ScreenCore 图标数据源（LSApplicationProxy）
 static UIImage *poc_picker_icon(NSString *bid) {
     if (!bid.length) return nil;
     if (!g_pickerIconCache) g_pickerIconCache = [NSMutableDictionary dictionary];
     UIImage *cached = g_pickerIconCache[bid];
     if (cached) return cached;
     UIImage *icon = nil;
+    // 路径 1：bundleURL → CFBundleIconFiles（最可靠）
     @try {
         id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
         if (proxy) {
-            NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
-            if (!([d isKindOfClass:[NSData class]] && d.length)) {
-                SEL s2 = sel_registerName("iconDataForVariant:scale:");
-                if ([proxy respondsToSelector:s2]) {
-                    NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
-                    d = fn(proxy, s2, @"2x", 2.0);
-                }
+            NSURL *burl = nil;
+            @try { burl = [proxy performSelector:@selector(bundleURL)]; } @catch (NSException *e) { }
+            NSString *bpath = burl.path;
+            NSBundle *b = bpath.length ? [NSBundle bundleWithPath:bpath] : nil;
+            NSDictionary *info = b.infoDictionary;
+            NSArray *files = nil;
+            if (info[@"CFBundleIcons"] && info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"]) {
+                files = info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"];
             }
-            if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
+            if (!files.count) files = info[@"CFBundleIconFiles"];
+            if (!files.count && info[@"CFBundleIcons"][@"CFBundleAlternateIcons"]) {
+                files = [info[@"CFBundleIcons"][@"CFBundleAlternateIcons"] allValues][0][@"CFBundleIconFiles"];
+            }
+            if (files.count) {
+                NSString *res = [b pathForResource:files[0] ofType:nil];   // pathForResource 自动匹配 @2x/@3x
+                if (!res && files.count > 1) res = [b pathForResource:files[1] ofType:nil];
+                if (res) icon = [UIImage imageWithContentsOfFile:res];
+            }
         }
     } @catch (NSException *e) { icon = nil; }
+    // 路径 2：iconDataForVariant:（兜底）
+    if (!icon) {
+        @try {
+            id proxy = [NSClassFromString(@"LSApplicationProxy") performSelector:@selector(applicationProxyForIdentifier:) withObject:bid];
+            if (proxy) {
+                NSData *d = [proxy performSelector:@selector(iconDataForVariant:) withObject:@"2x"];
+                if (!([d isKindOfClass:[NSData class]] && d.length)) {
+                    SEL s2 = sel_registerName("iconDataForVariant:scale:");
+                    if ([proxy respondsToSelector:s2]) {
+                        NSData *(*fn)(id, SEL, id, double) = (NSData *(*)(id, SEL, id, double))objc_msgSend;
+                        d = fn(proxy, s2, @"2x", 2.0);
+                    }
+                }
+                if ([d isKindOfClass:[NSData class]] && d.length) icon = [UIImage imageWithData:d];
+            }
+        } @catch (NSException *e) { icon = nil; }
+    }
     if (icon) g_pickerIconCache[bid] = icon;
+    else poc_log(@"ICON_NIL %@", bid);
     return icon;
 }
 
@@ -2011,18 +2003,18 @@ static void poc_picker_show(void) {
             g_triggerWin.rootViewController = vc;
             g_pickerVC = vc;
         }
-        // 面板 —— v0.4.37: Arc 半圆菜单（去面板背景，图标从内向外扩展三圈同心弧）
-        // ScreenCore/FloatingView 风格：图标沿弧排布，内圈→外圈（R=60/92/124），最多 12 个（运行中优先）
+        // 面板 —— v0.4.38: 选择器以"右缘手势起点"为圆心向屏幕左侧展开（半圆扇面，无面板背景）
+        // 圆心固定在右缘 (430, 155)，半径 140，图标沿 θ 110°→250°（正左 180°）均匀排布，最多 8 个
         UIView *panel = g_pickerPanel;
         NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
-        NSArray *apps = (allApps.count > 12) ? [allApps subarrayWithRange:NSMakeRange(0, 12)] : allApps;
+        NSArray *apps = (allApps.count > 8) ? [allApps subarrayWithRange:NSMakeRange(0, 8)] : allApps;
         NSUInteger n = apps.count ? apps.count : 1;
-        const CGFloat pw = 340, pH = 260;                 // 透明坐标容器（仅承载图标布局 + 跟手）
-        const CGFloat panelX = 430 - pw;                   // 贴右缘
+        const CGFloat pw = 200, pH = 310;                 // 透明坐标容器（承载图标布局 + 跟手）
+        const CGFloat panelX = 430 - pw;                   // 右缘贴齐
         const CGFloat panelY = MIN(140, 932 - pH - 20);
         if (!panel) {
             panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, pw, pH)];
-            panel.backgroundColor = [UIColor clearColor];  // v0.4.37: 去面板背景（图标直接悬浮）
+            panel.backgroundColor = [UIColor clearColor];  // 去面板背景（图标直接悬浮）
             g_pickerPanel = panel;
             [g_pickerVC.view addSubview:panel];
             // v0.4.28: 选择器打开期间点击面板外部（非 strip 区）→ 关闭选择器
@@ -2043,30 +2035,28 @@ static void poc_picker_show(void) {
         if (back2) back2.hidden = NO;
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         g_pickerGrid = nil;
-        // Arc 图标 —— 三圈同心弧（从内向外扩展）：R=60/92/124，每圈 4 个（θ=150°/110°/70°/30°）
-        // 圆心 (170, 205)，上半弧（开口朝左，右缘滑入自然）
-        const CGFloat cx = 170, cy = 205;
-        const CGFloat R0 = 60.0, R1 = 92.0, R2 = 124.0;
-        const double thetas[4] = {150.0 * M_PI / 180.0, 110.0 * M_PI / 180.0, 70.0 * M_PI / 180.0, 30.0 * M_PI / 180.0};
+        // 图标 —— 以右缘为圆心向左侧展开（圆心=手势起点：面板内 (pw, cyP)，屏内 x=430 右缘，y 跟手）
+        const CGFloat cyP = 155.0;                          // 圆心 y（面板内坐标，面板跟手 → 屏内 cy = panelY + 155）
+        const CGFloat R = 140.0;
+        // θ 110°→250°（经正左 180°），n 个均匀分布（n=1 → 180°）
         if (!g_pickerSelFB) g_pickerSelFB = [[UISelectionFeedbackGenerator alloc] init];
         if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
         g_pickerApps = apps;
         for (NSUInteger i = 0; i < n; i++) {
-            NSUInteger ring = (i / 4) % 3;                 // 圈：0 内 → 2 外
-            CGFloat R = (ring == 0) ? R0 : (ring == 1) ? R1 : R2;
-            double theta = thetas[i % 4];
-            CGFloat ix = cx + R * cos(theta);
-            CGFloat iy = cy - R * sin(theta);
+            double theta = M_PI;                            // 180°
+            if (n > 1) theta = 110.0 * M_PI / 180.0 + (double)i * (140.0 * M_PI / 180.0) / (double)(n - 1);
+            CGFloat ix = pw + R * cos(theta);               // 面板内 x（圆心面板内 (pw, cyP)）
+            CGFloat iy = cyP - R * sin(theta);              // 面板内 y
             NSDictionary *app = apps[i];
             NSString *bid = app[@"bundle"] ?: @"";
             NSString *name = app[@"name"] ?: bid;
             UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-            b.frame = CGRectMake(0, 0, 56, 70);
+            b.frame = CGRectMake(0, 0, 52, 66);
             b.center = CGPointMake(ix, iy);
             b.tag = 600 + (NSInteger)i;
             b.backgroundColor = [UIColor clearColor];
             UIImage *icon = poc_picker_icon(bid);
-            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(8, 2, 40, 40)];
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(6, 1, 40, 40)];
             iv.contentMode = UIViewContentModeScaleAspectFit;
             iv.layer.cornerRadius = 9;
             iv.clipsToBounds = YES;
@@ -2074,7 +2064,7 @@ static void poc_picker_show(void) {
             iv.backgroundColor = [UIColor colorWithWhite:0.32 alpha:0.9];
             iv.userInteractionEnabled = NO;
             [b addSubview:iv];
-            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 44, 56, 24)];
+            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 42, 52, 22)];
             lb.text = name.length > 6 ? [name substringToIndex:6] : name;
             lb.textColor = [UIColor whiteColor];
             lb.font = [UIFont systemFontOfSize:10];
@@ -2092,7 +2082,7 @@ static void poc_picker_show(void) {
                             options:UIViewAnimationOptionCurveEaseOut animations:^{
             panel.frame = CGRectMake(panelX, panelY, pw, pH);
         } completion:nil];
-        poc_log(@"PICKER_SHOW apps=%ld arc3=1", (long)apps.count);
+        poc_log(@"PICKER_SHOW apps=%ld arcL=1 R=%.0f", (long)apps.count, R);
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
     }
@@ -2287,23 +2277,20 @@ static void poc_setup_edge_trigger(void) {
             ny = MAX(60.0, MIN(ny, 932.0 - pH - 20.0));   // clamp 屏幕内
             g_pickerPanel.center = CGPointMake(g_pickerPanel.center.x, ny);
         }
-        // v0.4.37: Arc 高亮 —— 手指位置 → (半径, 角度) 匹配最近图标（三圈同心弧）
+        // v0.4.38: Arc 高亮 —— 右缘圆心 (pw,155)，R=140，θ 110°→250°，角度匹配最近图标
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerApps.count) {
             CGRect pf = g_pickerPanel.frame;
-            const CGFloat cx = 170.0, cy = 205.0;
-            const CGFloat R0 = 60.0, R1 = 92.0, R2 = 124.0;
-            const double thetas[4] = {150.0*M_PI/180.0, 110.0*M_PI/180.0, 70.0*M_PI/180.0, 30.0*M_PI/180.0};
-            CGFloat dx = (p.x - pf.origin.x) - cx;
-            CGFloat dy = cy - (p.y - pf.origin.y);
+            const CGFloat pw = 200.0, cyP = 155.0, R = 140.0;
+            CGFloat dx = (p.x - pf.origin.x) - pw;
+            CGFloat dy = cyP - (p.y - pf.origin.y);
             double ang = atan2(dy, dx);
             double rad = hypot(dx, dy);
             NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
             double best = 1e9;
             for (NSUInteger i = 0; i < n; i++) {
-                NSUInteger ring = (i / 4) % 3;
-                CGFloat R = (ring == 0) ? R0 : (ring == 1) ? R1 : R2;
-                double theta = thetas[i % 4];
+                double theta = M_PI;
+                if (n > 1) theta = 110.0 * M_PI / 180.0 + (double)i * (140.0 * M_PI / 180.0) / (double)(n - 1);
                 double dAng = fabs(ang - theta);
                 if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
                 double score = fabs(rad - R) + R * dAng;   // 径向差 + 弧长差
@@ -2330,20 +2317,17 @@ static void poc_setup_edge_trigger(void) {
                 poc_picker_hide(); return;
             }
             CGRect pf = g_pickerPanel.frame;
-            const CGFloat cx = 170.0, cy = 205.0;
-            const CGFloat R0 = 60.0, R1 = 92.0, R2 = 124.0;
-            const double thetas[4] = {150.0*M_PI/180.0, 110.0*M_PI/180.0, 70.0*M_PI/180.0, 30.0*M_PI/180.0};
-            CGFloat dx = (p.x - pf.origin.x) - cx;
-            CGFloat dy = cy - (p.y - pf.origin.y);
+            const CGFloat pw = 200.0, cyP = 155.0, R = 140.0;
+            CGFloat dx = (p.x - pf.origin.x) - pw;
+            CGFloat dy = cyP - (p.y - pf.origin.y);
             double ang = atan2(dy, dx);
             double rad = hypot(dx, dy);
             NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
             double best = 1e9;
             for (NSUInteger i = 0; i < n; i++) {
-                NSUInteger ring = (i / 4) % 3;
-                CGFloat R = (ring == 0) ? R0 : (ring == 1) ? R1 : R2;
-                double theta = thetas[i % 4];
+                double theta = M_PI;
+                if (n > 1) theta = 110.0 * M_PI / 180.0 + (double)i * (140.0 * M_PI / 180.0) / (double)(n - 1);
                 double dAng = fabs(ang - theta);
                 if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
                 double score = fabs(rad - R) + R * dAng;
@@ -2380,7 +2364,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.37 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.38 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
