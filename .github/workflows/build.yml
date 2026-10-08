@@ -132,38 +132,100 @@ jobs:
                   ((void(*)(id, SEL, id, id))qs_orig_setpref)(self, _cmd, value, spec);
               }
           }
-          // v0.4.52: 不依赖 bundleForClass swizzle 是否被 loadSpecifiersFromPlistName: 内部采用
-          // 直接调用带 bundle 参数的变体 loadSpecifiersFromPlistName:target:bundle:，显式传我们的 bundle（确定性路径）
+          // v0.4.53: bundleWithPath 硬编码路径在 Preferences 进程不可见（BUNDLE_PATH_FAIL）
+          // 从 dyld image 推导 bundle 路径（executable 已加载，其路径一定可见）；再优先 loadSpecifiersFromPlistName:target:bundle:
+          // 若 bundleWithPath 仍失败 → 手动解析 Root.plist 并手动构造 PSSpecifier（cell 枚举按 libprefs 标准 + 读回 cellType 校准日志）
+          static NSString *qs_bundle_path(void) {
+              uint32_t cnt = _dyld_image_count();
+              for (uint32_t i = 0; i < cnt; i++) {
+                  const char *name = _dyld_get_image_name(i);
+                  if (name && strstr(name, "QingSplitPrefs.bundle/QingSplitPrefs")) {
+                      NSString *s = [NSString stringWithUTF8String:name];
+                      return [s stringByDeletingLastPathComponent];
+                  }
+              }
+              return nil;
+          }
+          // 手动构造 PSSpecifier（libprefs 标准 cell 枚举；读回 cellType 校准）
+          static id qs_mk_spec(Class PS, id dict) {
+              NSString *cellStr = [dict objectForKey:@"cell"];
+              NSString *label = [dict objectForKey:@"label"];
+              NSString *key = [dict objectForKey:@"key"];
+              NSString *defaults = [dict objectForKey:@"defaults"];
+              int cell = 0;
+              if ([cellStr isEqualToString:@"PSGroupCell"]) cell = 6;
+              else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 3;
+              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 2;
+              else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 4;
+              SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
+              if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING\n"); return nil; }
+              id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
+              SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
+              SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
+              id spec = mk(PS, mkSel, label, self, setSel, getSel, nil, cell, nil);
+              if (!spec) { qs_log(@"MK_RETURN_NIL %@\n", cellStr); return nil; }
+              void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
+              SEL spSel = NSSelectorFromString(@"setProperty:forKey:");
+              if (key) setProp(spec, spSel, key, @"key");
+              if (defaults) setProp(spec, spSel, defaults, @"defaults");
+              id defv = [dict objectForKey:@"default"];
+              if (defv) setProp(spec, spSel, defv, @"default");
+              id ph = [dict objectForKey:@"placeholder"];
+              if (ph) setProp(spec, spSel, ph, @"placeholder");
+              id ft = [dict objectForKey:@"footerText"];
+              if (ft) setProp(spec, spSel, ft, @"footerText");
+              return spec;
+          }
           static id qs_specifiers(id self, SEL _cmd) {
               qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
               id sp = nil;
-              NSBundle *our = [NSBundle bundleWithPath:@"/var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle"];
-              if (our) {
-                  qs_log(@"BUNDLE_PATH_OK %@\n", [our bundlePath]);
-                  NSString *rp = [our pathForResource:@"Root" ofType:@"plist"];
-                  qs_log(@"ROOT_PLIST_PATH %@\n", rp ? rp : @"NIL");
-                  @try {
-                      SEL loadSel2 = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:bundle:");
-                      if ([self respondsToSelector:loadSel2]) {
-                          id (*load2)(id, SEL, id, id, id) = (id(*)(id, SEL, id, id, id))objc_msgSend;
-                          sp = load2(self, loadSel2, @"Root", self, our);
-                          qs_log(@"LOAD2_COUNT %lu\n", (unsigned long)[(id)sp count]);
-                      } else {
-                          qs_log(@"LOAD2_METHOD_MISSING\n");
-                          SEL loadSel1 = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:");
-                          if ([self respondsToSelector:loadSel1]) {
-                              id (*load1)(id, SEL, id, id) = (id(*)(id, SEL, id, id))objc_msgSend;
-                              sp = load1(self, loadSel1, @"Root", self);
+              NSString *bp = qs_bundle_path();
+              qs_log(@"DYLD_BUNDLE_PATH %@\n", bp ? bp : @"NIL");
+              if (bp) {
+                  NSBundle *our = [NSBundle bundleWithPath:bp];
+                  if (our) {
+                      qs_log(@"BUNDLE_PATH_OK %@\n", bp);
+                      @try {
+                          SEL loadSel2 = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:bundle:");
+                          if ([self respondsToSelector:loadSel2]) {
+                              id (*load2)(id, SEL, id, id, id) = (id(*)(id, SEL, id, id, id))objc_msgSend;
+                              sp = load2(self, loadSel2, @"Root", self, our);
+                              qs_log(@"LOAD2_COUNT %lu\n", (unsigned long)[(id)sp count]);
                           } else {
-                              qs_log(@"LOAD1_METHOD_MISSING\n");
+                              qs_log(@"LOAD2_METHOD_MISSING\n");
+                          }
+                      } @catch (NSException *e) { qs_log(@"LOAD2_EXC %@\n", e.name); }
+                  } else {
+                      qs_log(@"BUNDLE_PATH_FAIL dyld-derived\n");
+                  }
+              }
+              if (!sp || (id)sp == (id)@[] || [(id)sp count] == 0) {
+                  // 兜底：手动解析 Root.plist
+                  NSString *plistPath = nil;
+                  if (bp) plistPath = [bp stringByAppendingPathComponent:@"Root.plist"];
+                  if (!plistPath || ![[NSFileManager defaultManager] fileExistsAtPath:plistPath]) {
+                      qs_log(@"ROOT_PLIST_MISSING %@\n", plistPath ? plistPath : @"NIL");
+                  } else {
+                      qs_log(@"ROOT_PLIST_EXISTS\n");
+                      NSDictionary *rootDict = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+                      NSArray *items = rootDict ? [rootDict objectForKey:@"PreferenceSpecifiers"] : nil;
+                      if (!items) items = (id)rootDict;
+                      qs_log(@"MANUAL_ITEMS %lu\n", (unsigned long)[(id)items count]);
+                      Class PS = NSClassFromString(@"PSSpecifier");
+                      NSMutableArray *arr = [NSMutableArray array];
+                      for (id d in items) {
+                          if ([d isKindOfClass:[NSDictionary class]]) {
+                              id spec = qs_mk_spec(PS, d);
+                              if (spec) {
+                                  int ct = 0;
+                                  @try { ct = [[spec valueForKey:@"cellType"] intValue]; } @catch (NSException *e) {}
+                                  qs_log(@"MANUAL_SPEC cell=%@ type=%d\n", [d objectForKey:@"cell"], ct);
+                                  [arr addObject:spec];
+                              }
                           }
                       }
-                  } @catch (NSException *e) {
-                      qs_log(@"LOAD_EXC %@\n", e.name);
-                      sp = nil;
+                      sp = arr;
                   }
-              } else {
-                  qs_log(@"BUNDLE_PATH_FAIL\n");
               }
               if (!sp) {
                   qs_log(@"LOAD_FAILED Root.plist\n");
@@ -245,5 +307,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.52_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.53_iphoneos-arm64e.deb
           if-no-files-found: warn
