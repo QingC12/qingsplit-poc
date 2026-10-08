@@ -273,10 +273,6 @@ jobs:
               else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 6;
               else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 0;   // 候选 edit（1/2 已证是 link 进空页；0 渲染异常无 CELL_RENDER）
               else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 2;
-              if ([cellStr isEqualToString:@"PSEditTextCell"]) {
-                  // v0.4.62: 直接指定 cellClass，绕过 iOS17 cellType 枚举盲区（0/1/2 均非输入框）
-                  [spec setProperty:@"PSEditTextTableCell" forKey:@"cellClass"];
-              }
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
               if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING\n"); return nil; }
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
@@ -284,6 +280,12 @@ jobs:
               SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
               id spec = mk(PS, mkSel, label, target, setSel, getSel, nil, cell, nil);
               if (!spec) { qs_log(@"MK_RETURN_NIL %@\n", cellStr); return nil; }
+              if ([cellStr isEqualToString:@"PSEditTextCell"]) {
+                  // v0.4.62: 直接指定 cellClass，绕过 iOS17 cellType 枚举盲区（0/1/2 均非输入框）
+                  void (*setProp0)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
+                  SEL spSel0 = NSSelectorFromString(@"setProperty:forKey:");
+                  setProp0(spec, spSel0, @"PSEditTextTableCell", @"cellClass");
+              }
               void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
               SEL spSel = NSSelectorFromString(@"setProperty:forKey:");
               if (key) setProp(spec, spSel, key, @"key");
