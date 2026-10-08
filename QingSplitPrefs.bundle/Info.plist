@@ -15,8 +15,10 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.44</string>
+	<string>0.4.45</string>
 	<key>CFBundleVersion</key>
-	<string>0.4.44</string>
+	<string>0.4.45</string>
+	<key>NSPrincipalClass</key>
+	<string>QingSplitPrefsRootListController</string>
 </dict>
 </plist>
