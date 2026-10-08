@@ -278,14 +278,12 @@ jobs:
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
               SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
               SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
-              id spec = mk(PS, mkSel, label, target, setSel, getSel, nil, cell, nil);
+              // v0.4.64: detail 走官方构造参数（第 7 参数传 Class 对象）—— 手动 setProperty 字符串会被 iOS17 当 Class 指针用 → 崩
+              Class detailClass = nil;
+              id det = [dict objectForKey:@"detail"];
+              if (det) detailClass = NSClassFromString(det);
+              id spec = mk(PS, mkSel, label, target, setSel, getSel, detailClass, cell, nil);
               if (!spec) { qs_log(@"MK_RETURN_NIL %@\n", cellStr); return nil; }
-              if ([cellStr isEqualToString:@"PSEditTextCell"]) {
-                  // v0.4.62: 直接指定 cellClass，绕过 iOS17 cellType 枚举盲区（0/1/2 均非输入框）
-                  void (*setProp0)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
-                  SEL spSel0 = NSSelectorFromString(@"setProperty:forKey:");
-                  setProp0(spec, spSel0, @"PSEditTextTableCell", @"cellClass");
-              }
               void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
               SEL spSel = NSSelectorFromString(@"setProperty:forKey:");
               if (key) setProp(spec, spSel, key, @"key");
@@ -296,8 +294,6 @@ jobs:
               if (ph) setProp(spec, spSel, ph, @"placeholder");
               id ft = [dict objectForKey:@"footerText"];
               if (ft) setProp(spec, spSel, ft, @"footerText");
-              id det = [dict objectForKey:@"detail"];
-              if (det) setProp(spec, spSel, det, @"detail");
               if (key) {
                   objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                   // identifier 存 qs_<key>：走 setIdentifier: setter（copy 属性，副本保留），写入/读回都从它取 key
@@ -318,28 +314,33 @@ jobs:
           }
           // v0.4.63: 目标 App 子页 —— QSTargetsController 列出全部应用开关（cell=6 已证），写入 target_<bundleID>
           static id qs_target_specifiers(id self) {
+              qs_log(@"TARGETS_START\n");
               NSMutableArray *arr = [NSMutableArray array];
-              Class PS = NSClassFromString(@"PSSpecifier");
-              NSDictionary *g = @{@"cell":@"PSGroupCell", @"footerText":@"开启的应用会出现在右侧滑动选择器中，可作为悬浮窗目标"};
-              id gs = qs_mk_spec(PS, self, g);
-              if (gs) [arr addObject:gs];
-              Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-              qs_log(@"TARGETS_WS %@\n", wsCls ? @"FOUND" : @"MISSING");
-              if (wsCls) {
-                  id ws = [wsCls performSelector:@selector(defaultWorkspace)];
-                  NSArray *apps = [ws performSelector:@selector(allApplications)];
-                  qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
-                  for (id proxy in apps) {
-                      NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
-                      NSString *name = [proxy performSelector:@selector(localizedName)];
-                      if (!bid.length || !name.length) continue;
-                      if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
-                      NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":name,
-                                          @"key":[@"target_" stringByAppendingString:bid],
-                                          @"defaults":@"com.qingsplit.poc"};
-                      id spec = qs_mk_spec(PS, self, d);
-                      if (spec) [arr addObject:spec];
+              @try {
+                  Class PS = NSClassFromString(@"PSSpecifier");
+                  NSDictionary *g = @{@"cell":@"PSGroupCell", @"footerText":@"开启的应用会出现在右侧滑动选择器中，可作为悬浮窗目标"};
+                  id gs = qs_mk_spec(PS, self, g);
+                  if (gs) [arr addObject:gs];
+                  Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+                  qs_log(@"TARGETS_WS %@\n", wsCls ? @"FOUND" : @"MISSING");
+                  if (wsCls) {
+                      id ws = [wsCls performSelector:@selector(defaultWorkspace)];
+                      NSArray *apps = [ws performSelector:@selector(allApplications)];
+                      qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
+                      for (id proxy in apps) {
+                          NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
+                          NSString *name = [proxy performSelector:@selector(localizedName)];
+                          if (!bid.length || !name.length) continue;
+                          if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
+                          NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":name,
+                                              @"key":[@"target_" stringByAppendingString:bid],
+                                              @"defaults":@"com.qingsplit.poc"};
+                          id spec = qs_mk_spec(PS, self, d);
+                          if (spec) [arr addObject:spec];
+                      }
                   }
+              } @catch (NSException *e) {
+                  qs_log(@"TARGETS_EXC %@\n", e.name);
               }
               qs_log(@"TARGETS_BUILT %lu\n", (unsigned long)[arr count]);
               @try { [self setValue:arr forKey:@"_specifiers"]; } @catch (NSException *e) {}
@@ -518,5 +519,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.63_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.64_iphoneos-arm64e.deb
           if-no-files-found: warn
