@@ -60,8 +60,11 @@ jobs:
         run: |
           ldid -S QingSplitPOC.dylib
 
-      # v0.4.3: PreferenceBundles 可执行 —— 动态继承 PSListController（无私有头依赖），
+      # v0.4.42: PreferenceBundles 可执行 —— 动态继承 PSListController（无私有头依赖），
       # 输出到 bundle 内（bundle 可执行须与 bundle 同名、无扩展名）
+      # v0.4.42 修复白屏：PSCellType 是 int 枚举（PSGroupCell=8/PSSwitchCell=4/PSEditTextCell=2），
+      # 之前传 NSString 在 arm64 上截断成随机 int → PSSpecifier 渲染异常 → 白屏；
+      # 另加 /var/mobile/QingSplitPrefs.log 调试日志区分 dlopen 失败 / 类渲染失败
       - name: Build PreferenceBundle executable
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
@@ -70,13 +73,31 @@ jobs:
           #import <UIKit/UIKit.h>
           #import <objc/message.h>
           #import <objc/runtime.h>
+          #import <stdarg.h>
 
-          // v0.4.5: 不再依赖 Root.plist / loadSpecifiersFromPlistName ——
-          // 动态类无 bundle 关联 + plist 顶层为 dict，两条路都拿不到 specifiers。
-          // 直接 runtime 构造 PSSpecifier 数组（iOS 17 Settings 渲染同一套对象）。
-          static id qs_mk(Class PS, id name, id target, SEL setSel, SEL getSel, id cell) {
+          static void qs_log(NSString *fmt, ...) {
+              @try {
+                  va_list ap; va_start(ap, fmt);
+                  NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+                  va_end(ap);
+                  msg = [msg stringByAppendingString:@"\n"];
+                  NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:@"/var/mobile/QingSplitPrefs.log"];
+                  if (!fh) {
+                      [msg writeToFile:@"/var/mobile/QingSplitPrefs.log" atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+                  } else {
+                      [fh seekToEndOfFile];
+                      [fh writeData:[msg dataUsingEncoding:NSUTF8StringEncoding]];
+                      [fh closeFile];
+                  }
+              } @catch (NSException *e) {}
+          }
+
+          // PSCellType 枚举（Preferences.framework 私有头，避免包含仅用常量）
+          enum { kPSGroupCell = 8, kPSSwitchCell = 4, kPSEditTextCell = 2 };
+
+          static id qs_mk(Class PS, id name, id target, SEL setSel, SEL getSel, int cell) {
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
-              id (*mk)(id, SEL, id, id, SEL, SEL, id, id, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, id, id))objc_msgSend;
+              id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
               return mk(PS, mkSel, name, target, setSel, getSel, nil, cell, nil);
           }
           static void qs_prop(id spec, id value, NSString *key) {
@@ -84,32 +105,34 @@ jobs:
               setProp(spec, NSSelectorFromString(@"setProperty:forKey:"), value, key);
           }
           static id qs_switch(Class PS, id target, SEL setSel, SEL getSel, NSString *label, NSString *key) {
-              id s = qs_mk(PS, label, target, setSel, getSel, @"PSSwitchCell");
+              id s = qs_mk(PS, label, target, setSel, getSel, kPSSwitchCell);
               qs_prop(s, key, @"key");
               qs_prop(s, @"com.qingsplit.poc", @"defaults");
               qs_prop(s, @YES, @"default");
               return s;
           }
           static id qs_specifiers(id self, SEL _cmd) {
-              id sp = [self valueForKey:@"_specifiers"];
+              qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
+              id sp = nil;
+              @try { sp = [self valueForKey:@"_specifiers"]; } @catch (NSException *e) { sp = nil; }
               if (!sp) {
                   Class PS = NSClassFromString(@"PSSpecifier");
                   if (PS) {
                       SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
                       SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
 
-                      id g1 = qs_mk(PS, @"", self, setSel, getSel, @"PSGroupCell");
-                      qs_prop(g1, @"类 Stheno 浮动窗口（初版 POC）。修改设置后需重启 SpringBoard 生效。", @"footerText");
+                      id g1 = qs_mk(PS, @"", self, setSel, getSel, kPSGroupCell);
+                      qs_prop(g1, @"类 Stheno 浮动窗口（POC）。修改设置后需重启 SpringBoard 生效。", @"footerText");
 
                       id sw = qs_switch(PS, self, setSel, getSel, @"启用悬浮窗", @"enabled");
 
-                      id tf = qs_mk(PS, @"目标 App", self, setSel, getSel, @"PSEditTextCell");
+                      id tf = qs_mk(PS, @"目标 App", self, setSel, getSel, kPSEditTextCell);
                       qs_prop(tf, @"targets", @"key");
                       qs_prop(tf, @"com.qingsplit.poc", @"defaults");
                       qs_prop(tf, @"", @"default");
                       qs_prop(tf, @"com.coolapk.app（多个用逗号分隔，留空=所有前台 App）", @"placeholder");
 
-                      id g2 = qs_mk(PS, @"", self, setSel, getSel, @"PSGroupCell");
+                      id g2 = qs_mk(PS, @"", self, setSel, getSel, kPSGroupCell);
                       qs_prop(g2, @"窗口行为", @"footerText");
 
                       id h = qs_switch(PS, self, setSel, getSel, @"半屏吸附", @"halfSnap");
@@ -118,21 +141,26 @@ jobs:
                       id cb = qs_switch(PS, self, setSel, getSel, @"关闭按钮", @"closeBtn");
 
                       sp = @[g1, sw, tf, g2, h, e, sh, cb];
+                      qs_log(@"SPECIFIERS_BUILT count=%lu\n", (unsigned long)[sp count]);
                   }
                   if (!sp) sp = @[];
-                  [self setValue:sp forKey:@"_specifiers"];
+                  @try { [self setValue:sp forKey:@"_specifiers"]; } @catch (NSException *e) {}
               }
               return sp;
           }
 
           __attribute__((constructor))
           static void qs_prefs_bundle_init(void) {
+              qs_log(@"PREFS_BUNDLE_LOADED pid=%d\n", getpid());
               Class ps = NSClassFromString(@"PSListController");
-              if (!ps) return;
+              if (!ps) { qs_log(@"NO_PSLISTCONTROLLER\n"); return; }
               Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
               if (sub) {
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
                   objc_registerClassPair(sub);
+                  qs_log(@"CLASS_REGISTERED QingSplitPrefsRootListController\n");
+              } else {
+                  qs_log(@"CLASS_EXISTS\n");
               }
           }
           EOF
@@ -160,5 +188,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.41_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.42_iphoneos-arm64e.deb
           if-no-files-found: warn
