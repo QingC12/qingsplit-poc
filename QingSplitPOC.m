@@ -1038,6 +1038,8 @@ static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene
 static BOOL g_triggerArmed = NO;
 static BOOL g_launchPending = NO;        // v0.4.24: 已选择未运行应用 → 启动后等待 scene 出现
 static NSTimeInterval g_launchPendingAt = 0;
+static BOOL g_sceneActivationUsed = NO;          // v0.4.30: 本次选择器是否已走系统级 scene 激活（UIWindowSceneActivationConfiguration）
+static BOOL g_sceneActivationFallbackDone = NO;  // v0.4.30: 系统激活 15s 无 scene → 已降级老路径启动一次
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
 // v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
@@ -1501,9 +1503,18 @@ static void poc_try_float(void) {
             // v0.4.24: 启动中的应用 scene 尚未出现 → 持续轮询（3s 节流日志，15s 超时放弃）
             NSTimeInterval nowT = CACurrentMediaTime();
             if (nowT - g_launchPendingAt > 15.0) {
-                g_launchPending = NO;
-                g_manualSid = nil;
-                poc_log(@"LAUNCH_TIMEOUT wanted=%@ — app scene never appeared", wanted);
+                if (g_sceneActivationUsed && !g_sceneActivationFallbackDone) {
+                    // v0.4.30: 系统级 scene 激活 15s 无 scene → 降级老路径启动一次（黑盒兜底）
+                    g_sceneActivationFallbackDone = YES;
+                    g_launchPending = YES;
+                    g_launchPendingAt = CACurrentMediaTime();
+                    BOOL ok = poc_launch_app(wanted);
+                    poc_log(@"LAUNCH_FALLBACK wanted=%@ ok=%d", wanted, ok);
+                } else {
+                    g_launchPending = NO;
+                    g_manualSid = nil;
+                    poc_log(@"LAUNCH_TIMEOUT wanted=%@ — app scene never appeared", wanted);
+                }
             } else {
                 static NSTimeInterval lastWaitLog = 0;
                 if (nowT - lastWaitLog >= 3.0) {
@@ -1843,14 +1854,22 @@ static void poc_picker_select(NSDictionary *app) {
         // v0.4.24: 未运行 → 启动应用，tick 持续轮询等待 scene 出现后建浮窗
         g_launchPending = YES;
         g_launchPendingAt = CACurrentMediaTime();
-        BOOL ok = poc_launch_app(sid);
-        poc_log(@"PICKER_SELECT sid=%@ running=0 launch=%d armed=1", sid, ok);
+        if (g_sceneActivationUsed) {
+            // v0.4.30: 已由 collectionView:sceneActivationConfigurationForItemAtIndexPath:point:
+            // 交给系统级激活（UIWindowSceneActivationConfiguration），不再重复启动
+            poc_log(@"PICKER_SELECT sid=%@ running=0 sceneAct=1 armed=1", sid);
+        } else {
+            BOOL ok = poc_launch_app(sid);
+            poc_log(@"PICKER_SELECT sid=%@ running=0 launch=%d armed=1", sid, ok);
+        }
     }
     poc_picker_hide();
 }
 
 static void poc_picker_show(void) {
     @try {
+        g_sceneActivationUsed = NO;           // v0.4.30: 每次打开选择器重置系统级激活标记
+        g_sceneActivationFallbackDone = NO;
         if (!g_triggerWin || g_win) return;   // 浮窗已激活 → 不弹选择器
         if (!g_pickerVC) {
             UIViewController *vc = [[UIViewController alloc] init];
@@ -2058,6 +2077,38 @@ static void poc_setup_edge_trigger(void) {
     lbl.text = dispName;
     return cell;
 }
+// v0.4.30: 系统级 scene 激活（iOS 15+ 公开 API，参考 Myrtle 选择器的
+// collectionView:sceneActivationConfigurationForItemAtIndexPath:point:）
+// —— 点选【未运行】应用时，由 UIKit 直接激活其 scene（比 LSApplicationWorkspace 更系统级、更干净）
+- (id)collectionView:(UICollectionView *)cv sceneActivationConfigurationForItemAtIndexPath:(NSIndexPath *)ip point:(CGPoint)pt {
+    NSInteger idx = ip.item;
+    if (idx < 0 || idx >= (NSInteger)g_pickerApps.count) return nil;
+    NSDictionary *a = g_pickerApps[idx];
+    if ([a[@"running"] boolValue]) return nil;   // 运行中 → 走 didSelect 直接托管
+    NSString *sid = a[@"sid"];
+    if (!sid.length) return nil;
+    Class cfgClass = NSClassFromString(@"UIWindowSceneActivationConfiguration");
+    if (!cfgClass) return nil;                    // iOS < 15 → 老路径
+    // 预置选择状态（与 poc_picker_select 同一入口逻辑）
+    g_sceneActivationUsed = YES;
+    g_manualSid = [sid copy];
+    g_triggerArmed = YES;
+    g_launchPending = YES;
+    g_launchPendingAt = CACurrentMediaTime();
+    @try {
+        NSUserActivity *ua = [[NSUserActivity alloc] initWithActivityType:@"com.qingsplit.launch"];
+        ua.targetContentIdentifier = sid;
+        ua.userInfo = @{@"bid": sid};
+        id inst = [cfgClass alloc];
+        id cfg = [inst performSelector:@selector(initWithUserActivity:) withObject:ua];
+        poc_log(@"PICKER_SCENEACTIVATION sid=%@", sid);
+        return cfg;
+    } @catch (NSException *e) {
+        poc_log(@"PICKER_SCENEACTIVATION_EXC %@", e.name);
+        g_sceneActivationUsed = NO;   // 构造失败 → 回退 didSelect 老路径
+        return nil;
+    }
+}
 - (void)collectionView:(UICollectionView *)cv didSelectItemAtIndexPath:(NSIndexPath *)ip {
     NSInteger idx = ip.item;
     if (idx < (NSInteger)g_pickerApps.count) {
@@ -2139,7 +2190,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.29 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.30 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
