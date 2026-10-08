@@ -1042,6 +1042,8 @@ static BOOL g_sceneActivationUsed = NO;          // v0.4.30: 本次选择器是�
 static BOOL g_sceneActivationFallbackDone = NO;  // v0.4.30: 系统激活 15s 无 scene → 已降级老路径启动一次
 
 static BOOL poc_launch_app(NSString *bundle);    // v0.4.30: 前向声明（tick 超时 fallback 早于定义）
+static void poc_opening_show(NSString *name);    // v0.4.31: 前向声明（FLOAT_CLOSED/LAUNCH_TIMEOUT/POC_OK 早于定义）
+static void poc_opening_hide(void);
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
 // v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
