@@ -543,6 +543,8 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化）
 static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义在下方全局区，供 QSFloatContainer 手势 ended 调用）
 static void poc_close_float(void);            // v0.3.16 前向声明（关闭浮窗：只移除窗口，不动 Scene）
+static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声明（onPan 拖到底→主屏打开早于定义）
+static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
 static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明（设置读取，定义在下方全局区）
 
 @interface QSFloatContainer : UIView
