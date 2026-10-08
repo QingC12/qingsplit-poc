@@ -565,6 +565,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     UITapGestureRecognizer *_doubleTap;   // v0.4.13: 双击顶部条重置窗口尺寸（细长条无法操作时恢复）
     UIView *_gripTop, *_gripBottom, *_gripLeft, *_gripRight;   // v0.4.14: 手势可视指示
     UILabel *_resetBadge;      // v0.4.14: 顶部双击重置图标（↻）
+    BOOL _fullscreen;          // v0.4.34: 全屏态（拖到底展开，FloatingView moveBottomFullScreenOpen 借鉴）
+    CGRect _preFullFrame;      // v0.4.34: 全屏前的浮窗 frame（缩回依据）
 }
 // v0.3.1 修复：contentView 赋值即自动 addSubview（v0.3.0 漏了 → host 不在视图树 → 内容不显示 + hostAlive=0）
 - (void)setContentView:(UIView *)cv {
@@ -731,6 +733,18 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         cv.transform = CGAffineTransformIdentity;
     }
 }
+// v0.4.34: 统一手势 chrome 显隐（全屏态隐藏：把手/角标/重置徽标/关闭按钮除外的指示全藏）
+- (void)setGestureChromeVisible:(BOOL)vis {
+    for (UIView *v in @[_gripTop, _gripBottom, _gripLeft, _gripRight, _resetBadge]) {
+        if (v) v.hidden = !vis;
+    }
+    // 全屏时关闭按钮保留（可随时退出/关闭），但移到右上角边缘
+    if (_closeBtn) {
+        _closeBtn.hidden = NO;
+        if (!vis) _closeBtn.frame = CGRectMake(self.bounds.size.width - 52, 6, 44, 44);
+        else [self setNeedsLayout];
+    }
+}
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = [super hitTest:point withEvent:event];
     if (h == self) return self;   // 边框 → 容器（手势）
@@ -803,7 +817,9 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gr shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
     return NO;
 }
-- (void)onLongPress:(UILongPressGestureRecognizer *)g {    if (g.state == UIGestureRecognizerStateBegan) {
+- (void)onLongPress:(UILongPressGestureRecognizer *)g {
+    if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
+    if (g.state == UIGestureRecognizerStateBegan) {
         _lpActive = YES;
         _lpOrigin = self.center;
         _lpStart = [g locationInView:self.superview];
@@ -868,6 +884,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 }
 // v0.4.13: 双击顶部条重置窗口 —— 细长条/畸形尺寸无法操作时，恢复默认尺寸（340×内容比例，居中）
 - (void)onDoubleTap:(UITapGestureRecognizer *)g {
+    if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
+
     poc_log(@"RESET_TAP");
     CGSize native = self.nativeContentSize;
     CGFloat defW = 340, defH = 500;
@@ -888,6 +906,14 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
+        // v0.4.34: 全屏态拖动 —— 只响应从底部区域起手的上滑（缩回手势）；其他拖动忽略
+        if (_fullscreen) {
+            CGPoint tr = [g translationInView:self.superview];
+            if (tr.y < -40) {
+                // 已上滑足够 → 松手时缩回（end 分支处理）；changed 阶段不做任何位移
+            }
+            return;
+        }
         // v0.4.9: 半屏吸附后拖离 → 还原吸附前浮动尺寸（Stheno medusaFrameLast/finalFrame 精神）
         if (_halfSnapped && self.bounds.size.width <= 215.5) {
             _halfSnapped = NO;
@@ -912,10 +938,49 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         self.center = c;
         [g setTranslation:CGPointZero inView:self.superview];
     } else if (g.state == UIGestureRecognizerStateEnded) {
+        // v0.4.34: 全屏态松手 —— 上滑缩回记忆尺寸（浮窗态），否则保持全屏
+        if (_fullscreen) {
+            CGPoint tr = [g translationInView:self.superview];
+            CGPoint vel = [g velocityInView:self.superview];
+            if (tr.y < -40 || vel.y < -400) {
+                CGRect pf = _preFullFrame;
+                if (pf.size.width <= 0 || pf.size.height <= 0) pf = CGRectMake(60, 120, 300, 500);
+                _fullscreen = NO;
+                _halfSnapped = NO;
+                UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.82
+                                                                                      initialVelocity:CGVectorMake(0, 0)];
+                UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.35 timingParameters:tp];
+                [anim addAnimations:^{ self.frame = pf; }];
+                [anim startAnimation];
+                [self setGestureChromeVisible:YES];
+                poc_log(@"FULLSCREEN_EXIT restore=%@", NSStringFromCGRect(pf));
+                poc_save_float_state(pf);
+            }
+            return;
+        }
+        // v0.4.34: 全屏展开 —— 拖动松手时浮窗底部已拖出屏幕（拖到底）→ 展开全屏
+        // 判定：maxY ≥ 屏幕高度（底部真正出屏，明确意图，正常拖动不会误触；
+        // 拖动约束允许窗口底部拖出屏，故可达到）
+        CGRect f = self.frame;
+        if (!_fullscreen && CGRectGetMaxY(f) >= 932.0) {
+            _preFullFrame = f;
+            _fullscreen = YES;
+            _halfSnapped = NO;
+            CGRect full = CGRectMake(0, 0, 430, 932);
+            UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.85
+                                                                                  initialVelocity:CGVectorMake(0, 0)];
+            UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.38 timingParameters:tp];
+            [anim addAnimations:^{ self.frame = full; }];
+            [anim startAnimation];
+            [self setGestureChromeVisible:NO];
+            poc_log(@"FULLSCREEN_ENTER from=%@", NSStringFromCGRect(f));
+            poc_save_float_state(full);
+            return;
+        }
         // v0.4.8: 修复 v0.4.7 半屏吸附 bug（snapped 后窗口宽未改 215 → 右吸半个出屏）
         // + 吸附阈值 40→25px（不过敏） + 惯性系数 0.18→0.12（减少"过半即吸"错觉）
-        CGRect f = self.frame;
-        CGFloat nx = f.origin.x, ny = f.origin.y;
+        CGRect f2 = self.frame;
+        CGFloat nx = f2.origin.x, ny = f2.origin.y;
         BOOL flung = NO;
         CGPoint vel = [g velocityInView:self.superview];
         CGFloat speed = (CGFloat)hypot(vel.x, vel.y);
@@ -924,27 +989,27 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             nx = nx + vel.x * 0.12;
             ny = ny + vel.y * 0.12;
             // clamp：至少 60px 留在屏内（v0.3.16 拖动约束）
-            CGFloat minX = -f.size.width + 60.0, maxX = 430.0 - 60.0;
-            CGFloat minY = -f.size.height + 60.0, maxY = 932.0 - 60.0;
+            CGFloat minX = -f2.size.width + 60.0, maxX = 430.0 - 60.0;
+            CGFloat minY = -f2.size.height + 60.0, maxY = 932.0 - 60.0;
             nx = MAX(minX, MIN(nx, maxX));
             ny = MAX(minY, MIN(ny, maxY));
         }
         // 半屏吸附（基于惯性后的位置）：宽 ≥ 60% 屏宽（258）贴左/右缘 → 215 半屏
         BOOL snapped = NO;
-        CGFloat snapW = f.size.width;
-        if (poc_setting_bool(@"halfSnap", YES) && f.size.width >= 258.0) {
+        CGFloat snapW = f2.size.width;
+        if (poc_setting_bool(@"halfSnap", YES) && f2.size.width >= 258.0) {
             if (nx < 25) { nx = 0; snapped = YES; snapW = 215; }
-            else if ((430 - (nx + f.size.width)) < 25) { nx = 215; snapped = YES; snapW = 215; }
+            else if ((430 - (nx + f2.size.width)) < 25) { nx = 215; snapped = YES; snapW = 215; }
         }
         // 边缘吸附（v0.3.16）—— v0.4.0 加开关
         if (!snapped && poc_setting_bool(@"edgeSnap", YES)) {
             if (nx < 25) nx = 0;
-            else if ((430 - (nx + f.size.width)) < 25) nx = 430 - f.size.width;
+            else if ((430 - (nx + f2.size.width)) < 25) nx = 430 - f2.size.width;
             if (ny < 25) ny = 0;
-            else if ((932 - (ny + f.size.height)) < 25) ny = 932 - f.size.height;
+            else if ((932 - (ny + f2.size.height)) < 25) ny = 932 - f2.size.height;
         }
         // v0.4.14: 半屏吸附高度按内容比例归一 + 垂直居中（防细长条 + fill 裁切只显示局部）
-        CGFloat snapH = f.size.height;
+        CGFloat snapH = f2.size.height;
         if (snapped) {
             CGFloat nw = self.nativeContentSize.width, nh = self.nativeContentSize.height;
             if (nw > 0 && nh > 0) {
@@ -955,7 +1020,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             ny = (932.0 - snapH) / 2.0;
         }
         CGRect sf = CGRectMake(nx, ny, snapW, snapH);
-        BOOL moved = (fabs(nx - f.origin.x) > 0.5 || fabs(ny - f.origin.y) > 0.5);
+        BOOL moved = (fabs(nx - f2.origin.x) > 0.5 || fabs(ny - f2.origin.y) > 0.5);
         if (snapped) {
             // v0.4.9: 记录吸附前尺寸（拖离时还原）
             _preSnapFrame = f;
@@ -980,6 +1045,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 //   朝对角（左下→右上 / 右下→左上）= 缩小；朝外直线（远离角落）= 放大
 //   用 translation 在"内方向"上的投影做指数映射，保持宽高比
 - (void)onScalePan:(UIPanGestureRecognizer *)g {
+    if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
+
     if (g.state == UIGestureRecognizerStateChanged) {
         CGPoint t = [g translationInView:self];
         CGPoint start = [g locationInView:self];
@@ -1003,6 +1070,8 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     }
 }
 - (void)onPinch:(UIPinchGestureRecognizer *)g {
+    if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
+
     if (g.state == UIGestureRecognizerStateChanged) {
         // v0.3.2: 保持宽高比缩放 —— 先统一 scale，再按比例 clamp（原版 W/H 独立 clamp 会破坏比例 → 内容变形）
         CGFloat ratio = self.bounds.size.height / self.bounds.size.width;   // H/W
@@ -1812,49 +1881,9 @@ static NSArray *poc_running_apps(void) {
 }
 
 // v0.4.24: 启动未运行应用（SpringBoard 进程内 LSApplicationWorkspace）
+// v0.4.34: 精简 —— 移除 FBS 尝试（FBProcessHandle handleForBundleIdentifier: 真机不存在，
+// 实测 LAUNCH_FBS_NO_HANDLE 每次落空，纯噪音；v0.4.32 已保证在后台线程调用，主线程不阻塞）
 static BOOL poc_launch_app(NSString *bundle) {
-    // v0.4.33: 优先 FBSOpenApplicationService（ScreenCore/FloatingView 均使用，异步 fire-and-forget，
-    // 不等待 app launch 完成，杜绝 v0.4.31 的 10s 主线程阻塞；调用宽松 performSelector + try/catch）
-    @try {
-        id svc = [NSClassFromString(@"FBSOpenApplicationService") performSelector:@selector(serviceWithDefaultShellEndpoint)];
-        id opts = [NSClassFromString(@"FBSOpenApplicationOptions") performSelector:@selector(optionsWithDictionary:)
-                                                                    withObject:@{@"FBSOpenApplicationOptionKeyActivate": @YES}];
-        if (svc && opts) {
-            // iOS15+ 签名：-[FBSOpenApplicationService openApplication:withOptions:clientHandle:error:]
-            // application 参数用 FBProcessHandle（handleForBundleIdentifier:）；不存在则抛异常回退 LS
-            id handle = [NSClassFromString(@"FBProcessHandle") performSelector:@selector(handleForBundleIdentifier:) withObject:bundle];
-            if (handle) {
-                // iOS15+ 签名：-[FBSOpenApplicationService openApplication:withOptions:clientHandle:error:]
-                // 私有 selector SDK 不可见 → NSInvocation 构造（宽松、免编译期检查）
-                SEL sel = NSSelectorFromString(@"openApplication:withOptions:clientHandle:error:");
-                if ([svc respondsToSelector:sel]) {
-                    NSMethodSignature *sig = [svc methodSignatureForSelector:sel];
-                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                    [inv setSelector:sel];
-                    [inv setTarget:svc];
-                    [inv setArgument:&handle atIndex:2];
-                    [inv setArgument:&opts atIndex:3];
-                    id nilClient = nil;
-                    [inv setArgument:&nilClient atIndex:4];
-                    NSError *err = nil;
-                    [inv setArgument:&err atIndex:5];
-                    [inv invoke];
-                    if (!err) {
-                        poc_log(@"LAUNCH_FBS sid=%@ ok=1", bundle);
-                        return YES;
-                    }
-                    poc_log(@"LAUNCH_FBS_ERR sid=%@ %@", bundle, err.localizedDescription ?: @"?");
-                } else {
-                    poc_log(@"LAUNCH_FBS_NO_SEL sid=%@ — fallback LS", bundle);
-                }
-            } else {
-                poc_log(@"LAUNCH_FBS_NO_HANDLE sid=%@ — fallback LS", bundle);
-            }
-        }
-    } @catch (NSException *e) {
-        poc_log(@"LAUNCH_FBS_EXC sid=%@ %@ — fallback LS", bundle, e.name);
-    }
-    // 兜底：LSApplicationWorkspace（v0.4.32 已在后台线程调用，不阻塞主线程）
     @try {
         id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
         if (ws) {
@@ -2293,7 +2322,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.33 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.34 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
