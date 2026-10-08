@@ -113,6 +113,7 @@ jobs:
               }
               return qs_orig_bundleForClass(self, _cmd, cls);
           }
+          static char kKeyAO; static char kDefaultsAO;
           static IMP qs_orig_setpref = NULL;
           static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
               @try {
@@ -154,7 +155,6 @@ jobs:
           // iOS17 cell 枚举实测校准（v0.4.53 日志）：group=6 / switch=3（真开关，可点出 SET_CALLED）/ 2=link（点击进空页）
           // PSEditTextCell 未知 → 先用 1（下一位候选），若渲染为静态文本/其他下一轮试 5/7
           // key/defaults 用 associated object 存（propertyForKey: 读回 null，保底写入会失败）
-          static char kKeyAO; static char kDefaultsAO;
           static id qs_mk_spec(Class PS, id target, id dict) {
               NSString *cellStr = [dict objectForKey:@"cell"];
               NSString *label = [dict objectForKey:@"label"];
