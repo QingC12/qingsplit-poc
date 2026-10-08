@@ -92,23 +92,38 @@ jobs:
               } @catch (NSException *e) {}
           }
 
-          // PSCellType 枚举（Preferences.framework 私有头，避免包含仅用常量）
-          enum { kPSGroupCell = 8, kPSSwitchCell = 4, kPSEditTextCell = 2 };
-
-          static id qs_mk(Class PS, id name, id target, SEL setSel, SEL getSel, int cell) {
-              SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
-              id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
-              return mk(PS, mkSel, name, target, setSel, getSel, nil, cell, nil);
-          }
-          static void qs_prop(id spec, id value, NSString *key) {
+          // v0.4.46: 不再赌整数 cell 枚举（iOS 17 枚举与 libprefs 可能不同，导致开关无反应/edit 渲染成 link）
+          // 改用 framework 便捷方法：groupSpecifierWithName: / switchSpecifierWithTitle:target:set:get:
+          // cellType 由 framework 内部决定 → 一定渲染成正确控件；set/get 走 PSListController 标准方法
+          static id qs_prop(id spec, id value, NSString *key) {
               void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
               setProp(spec, NSSelectorFromString(@"setProperty:forKey:"), value, key);
           }
+          static id qs_group(Class PS, NSString *footer) {
+              id (*mk)(id, SEL, id) = (id(*)(id, SEL, id))objc_msgSend;
+              id g = mk(PS, NSSelectorFromString(@"groupSpecifierWithName:"), @"");
+              if (footer.length) qs_prop(g, footer, @"footerText");
+              return g;
+          }
           static id qs_switch(Class PS, id target, SEL setSel, SEL getSel, NSString *label, NSString *key) {
-              id s = qs_mk(PS, label, target, setSel, getSel, kPSSwitchCell);
+              id (*mk)(id, SEL, id, id, SEL, SEL) = (id(*)(id, SEL, id, id, SEL, SEL))objc_msgSend;
+              id s = mk(PS, NSSelectorFromString(@"switchSpecifierWithTitle:target:set:get:"), label, target, setSel, getSel);
+              if (!s) return nil;   // 便捷方法不存在 → 该版本不支持（日志可见）
               qs_prop(s, key, @"key");
               qs_prop(s, @"com.qingsplit.poc", @"defaults");
               qs_prop(s, @YES, @"default");
+              return s;
+          }
+          static id qs_edit(Class PS, id target, SEL setSel, SEL getSel, NSString *label, NSString *key) {
+              // 无官方便捷方法：全量构造 + cell=2（libprefs PSEditTextCell；iOS17 若不符下一轮改子页方案）
+              id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
+              id s = mk(PS, NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:"),
+                        label, target, setSel, getSel, nil, 2, nil);
+              if (!s) return nil;
+              qs_prop(s, key, @"key");
+              qs_prop(s, @"com.qingsplit.poc", @"defaults");
+              qs_prop(s, @"", @"default");
+              qs_prop(s, @"com.coolapk.app（多个用逗号分隔，留空=所有前台 App）", @"placeholder");
               return s;
           }
           static id qs_specifiers(id self, SEL _cmd) {
@@ -121,26 +136,25 @@ jobs:
                       SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
                       SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
 
-                      id g1 = qs_mk(PS, @"", self, setSel, getSel, kPSGroupCell);
-                      qs_prop(g1, @"类 Stheno 浮动窗口（POC）。修改设置后需重启 SpringBoard 生效。", @"footerText");
-
+                      id g1 = qs_group(PS, @"类 Stheno 浮动窗口（POC）。修改设置后需重启 SpringBoard 生效。");
                       id sw = qs_switch(PS, self, setSel, getSel, @"启用悬浮窗", @"enabled");
-
-                      id tf = qs_mk(PS, @"目标 App", self, setSel, getSel, kPSEditTextCell);
-                      qs_prop(tf, @"targets", @"key");
-                      qs_prop(tf, @"com.qingsplit.poc", @"defaults");
-                      qs_prop(tf, @"", @"default");
-                      qs_prop(tf, @"com.coolapk.app（多个用逗号分隔，留空=所有前台 App）", @"placeholder");
-
-                      id g2 = qs_mk(PS, @"", self, setSel, getSel, kPSGroupCell);
-                      qs_prop(g2, @"窗口行为", @"footerText");
-
+                      id tf = qs_edit(PS, self, setSel, getSel, @"目标 App", @"targets");
+                      id g2 = qs_group(PS, @"窗口行为");
                       id h = qs_switch(PS, self, setSel, getSel, @"半屏吸附", @"halfSnap");
                       id e = qs_switch(PS, self, setSel, getSel, @"边缘吸附", @"edgeSnap");
                       id sh = qs_switch(PS, self, setSel, getSel, @"主屏回退", @"screenHide");
                       id cb = qs_switch(PS, self, setSel, getSel, @"关闭按钮", @"closeBtn");
 
-                      sp = @[g1, sw, tf, g2, h, e, sh, cb];
+                      NSMutableArray *arr = [NSMutableArray array];
+                      if (g1) [arr addObject:g1];
+                      if (sw) [arr addObject:sw]; else qs_log(@"SWITCH_MISSING enabled\n");
+                      if (tf) [arr addObject:tf]; else qs_log(@"EDIT_MISSING targets\n");
+                      if (g2) [arr addObject:g2];
+                      if (h) [arr addObject:h]; else qs_log(@"SWITCH_MISSING halfSnap\n");
+                      if (e) [arr addObject:e]; else qs_log(@"SWITCH_MISSING edgeSnap\n");
+                      if (sh) [arr addObject:sh]; else qs_log(@"SWITCH_MISSING screenHide\n");
+                      if (cb) [arr addObject:cb]; else qs_log(@"SWITCH_MISSING closeBtn\n");
+                      sp = arr;
                       qs_log(@"SPECIFIERS_BUILT count=%lu\n", (unsigned long)[sp count]);
                   }
                   if (!sp) sp = @[];
@@ -201,5 +215,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.45_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.46_iphoneos-arm64e.deb
           if-no-files-found: warn
