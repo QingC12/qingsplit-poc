@@ -906,14 +906,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
-        // v0.4.34: 全屏态拖动 —— 只响应从底部区域起手的上滑（缩回手势）；其他拖动忽略
-        if (_fullscreen) {
-            CGPoint tr = [g translationInView:self.superview];
-            if (tr.y < -40) {
-                // 已上滑足够 → 松手时缩回（end 分支处理）；changed 阶段不做任何位移
-            }
-            return;
-        }
+        // v0.4.35: 移除全屏态（拖到底改为"主屏打开"）—— 普通拖动照常
         // v0.4.9: 半屏吸附后拖离 → 还原吸附前浮动尺寸（Stheno medusaFrameLast/finalFrame 精神）
         if (_halfSnapped && self.bounds.size.width <= 215.5) {
             _halfSnapped = NO;
@@ -938,43 +931,22 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         self.center = c;
         [g setTranslation:CGPointZero inView:self.superview];
     } else if (g.state == UIGestureRecognizerStateEnded) {
-        // v0.4.34: 全屏态松手 —— 上滑缩回记忆尺寸（浮窗态），否则保持全屏
-        if (_fullscreen) {
-            CGPoint tr = [g translationInView:self.superview];
-            CGPoint vel = [g velocityInView:self.superview];
-            if (tr.y < -40 || vel.y < -400) {
-                CGRect pf = _preFullFrame;
-                if (pf.size.width <= 0 || pf.size.height <= 0) pf = CGRectMake(60, 120, 300, 500);
-                _fullscreen = NO;
-                _halfSnapped = NO;
-                UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.82
-                                                                                      initialVelocity:CGVectorMake(0, 0)];
-                UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.35 timingParameters:tp];
-                [anim addAnimations:^{ self.frame = pf; }];
-                [anim startAnimation];
-                [self setGestureChromeVisible:YES];
-                poc_log(@"FULLSCREEN_EXIT restore=%@", NSStringFromCGRect(pf));
-                poc_save_float_state(pf);
-            }
-            return;
-        }
-        // v0.4.34: 全屏展开 —— 拖动松手时浮窗底部已拖出屏幕（拖到底）→ 展开全屏
-        // 判定：maxY ≥ 屏幕高度（底部真正出屏，明确意图，正常拖动不会误触；
-        // 拖动约束允许窗口底部拖出屏，故可达到）
+        // v0.4.35: 拖到底 = 主屏打开（用户要求：拖出屏底 → 退出浮窗，目标 app 前台全屏显示）
+        // 悬浮窗自身放大到全屏无意义（内容层 host 全屏即等价主屏，且全屏态边缘难滑回）——已废弃
         CGRect f = self.frame;
-        if (!_fullscreen && CGRectGetMaxY(f) >= 932.0) {
-            _preFullFrame = f;
-            _fullscreen = YES;
+        if (CGRectGetMaxY(f) >= 932.0) {
+            [self setGestureChromeVisible:YES];
             _halfSnapped = NO;
-            CGRect full = CGRectMake(0, 0, 430, 932);
-            UISpringTimingParameters *tp = [[UISpringTimingParameters alloc] initWithDampingRatio:0.85
-                                                                                  initialVelocity:CGVectorMake(0, 0)];
-            UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.38 timingParameters:tp];
-            [anim addAnimations:^{ self.frame = full; }];
-            [anim startAnimation];
-            [self setGestureChromeVisible:NO];
-            poc_log(@"FULLSCREEN_ENTER from=%@", NSStringFromCGRect(f));
-            poc_save_float_state(full);
+            poc_log(@"FULLSCREEN_TO_MAIN from=%@", NSStringFromCGRect(f));
+            poc_close_float();   // 1. 关闭浮窗（只移除窗口，不杀 Scene）
+            // 2. 目标 app 拉回前台全屏（后台线程 LS，不阻塞主线程）
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSString *b = poc_current_bundle();
+                BOOL ok = b.length ? poc_launch_app(b) : NO;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    poc_log(@"TO_MAIN_LAUNCH sid=%@ ok=%d", b ?: @"?", ok);
+                });
+            });
             return;
         }
         // v0.4.8: 修复 v0.4.7 半屏吸附 bug（snapped 后窗口宽未改 215 → 右吸半个出屏）
@@ -1113,6 +1085,18 @@ static BOOL g_sceneActivationFallbackDone = NO;  // v0.4.30: 系统激活 15s �
 static BOOL poc_launch_app(NSString *bundle);    // v0.4.30: 前向声明（tick 超时 fallback 早于定义）
 static void poc_opening_show(NSString *name);    // v0.4.31: 前向声明（FLOAT_CLOSED/LAUNCH_TIMEOUT/POC_OK 早于定义）
 static void poc_opening_hide(void);
+// v0.4.35: 当前浮窗目标 bundle（sceneID:xxx-default → xxx）；无浮窗时返回 g_lastSid 解析值
+static NSString *poc_current_bundle(void) {
+    NSString *sid = g_lastSid;
+    if (!sid.length) return nil;
+    if ([sid hasPrefix:@"sceneID:"]) {
+        NSString *b = [sid substringFromIndex:@"sceneID:".length];
+        NSRange dash = [b rangeOfString:@"-"];
+        if (dash.location != NSNotFound) b = [b substringToIndex:dash.location];
+        return b;
+    }
+    return nil;
+}
 
 // v0.3.12: 浮窗状态记忆（位置/尺寸持久化）
 // v0.3.13 修复：真机 STATE_SAVE_FAIL（writeToFile 返回 NO）——多候选路径逐个尝试
@@ -2262,6 +2246,13 @@ static void poc_setup_edge_trigger(void) {
             poc_picker_show();
             [g setTranslation:CGPointZero inView:g.view];
         }
+        // v0.4.35: 面板跟手 —— 滑出后面板 y 跟随手指（单手连贯：滑出→上下滑→松手选中）
+        if (g_pickerPanel && !g_pickerPanel.hidden) {
+            CGFloat pH = g_pickerPanel.bounds.size.height;
+            CGFloat ny = p.y - pH / 2.0;
+            ny = MAX(60.0, MIN(ny, 932.0 - pH - 20.0));   // clamp 屏幕内
+            g_pickerPanel.center = CGPointMake(g_pickerPanel.center.x, ny);
+        }
         // 网格跟手高亮 —— v0.4.26: 手指位置 → cell（内容坐标 = 屏幕 y - 网格顶 + scroll offset）
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerGrid && g_pickerApps.count) {
             CGRect pf = g_pickerPanel.frame;
@@ -2322,7 +2313,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.34 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.35 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
