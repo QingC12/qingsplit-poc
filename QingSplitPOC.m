@@ -1235,6 +1235,7 @@ static void poc_close_float(void) {
         g_lastCtx = 0;
         // v0.4.15: 浮窗关闭 → "浮"按钮重现（手动触发入口）
         if (g_triggerWin) g_triggerWin.hidden = NO;
+        poc_opening_hide();   // v0.4.31: 关闭浮窗 → 提示条不可能残留
         poc_log(@"FLOAT_CLOSED — scene untouched, window removed, stay closed until target app exits");
     } @catch (NSException *e) {
         poc_log(@"FLOAT_CLOSE_EXC %@", e.name);
@@ -1515,6 +1516,7 @@ static void poc_try_float(void) {
                 } else {
                     g_launchPending = NO;
                     g_manualSid = nil;
+                    poc_opening_hide();   // v0.4.31: 启动放弃 → 移除提示
                     poc_log(@"LAUNCH_TIMEOUT wanted=%@ — app scene never appeared", wanted);
                 }
             } else {
@@ -1588,7 +1590,13 @@ static void poc_try_float(void) {
         }
     }
     if (!hv) {
-        poc_log(@"RENDER_FAIL all paths failed — POC ABORT (no write ops performed)");
+        // v0.4.31: RENDER_FAIL 日志节流（scene 刚出现但 layer 未就绪时，0.5s tick 会连续触发刷屏）
+        static NSTimeInterval lastFailLog = 0;
+        NSTimeInterval nowT = CACurrentMediaTime();
+        if (nowT - lastFailLog >= 5.0) {
+            lastFailLog = nowT;
+            poc_log(@"RENDER_FAIL all paths failed — POC ABORT (no write ops performed)");
+        }
         return;
     }
     poc_log(@"RENDER_PATH=%d ctx=%ld", path, (long)ctx);
@@ -1685,6 +1693,7 @@ static void poc_try_float(void) {
     g_lastCtx = ctx;
     // v0.4.15: 浮窗建立 → 隐藏"浮"按钮（浮窗有关闭按钮，无需双入口）
     if (g_triggerWin) g_triggerWin.hidden = YES;
+    poc_opening_hide();   // v0.4.31: 浮窗已建立 → 移除"正在打开"提示
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
     g_launchPending = NO;   // v0.4.24: 启动链路完成（scene 已找到并建窗）
     // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
@@ -1741,6 +1750,39 @@ static void poc_picker_hide(void) {
                 g_pickerPanel.hidden = YES;
             }];
         }
+    } @catch (NSException *e) { }
+}
+
+// v0.4.31: "正在打开"轻提示条 —— 点选未运行应用后立即给用户反馈（消除"卡顿无响应"感知），
+// 浮窗建立（POC_OK）或超时放弃时隐藏。
+static UIView *g_openingBar = nil;
+static void poc_opening_show(NSString *name) {
+    @try {
+        if (!g_triggerWin) return;
+        if (!g_openingBar) {
+            CGFloat sw = [[UIScreen mainScreen] bounds].size.width;
+            g_openingBar = [[UIView alloc] initWithFrame:CGRectMake((sw - 240) / 2.0, 120, 240, 44)];
+            g_openingBar.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.92];
+            g_openingBar.layer.cornerRadius = 22;
+            g_openingBar.layer.borderWidth = 1;
+            g_openingBar.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.25].CGColor;
+            UILabel *l = [[UILabel alloc] initWithFrame:g_openingBar.bounds];
+            l.tag = 1;
+            l.textColor = [UIColor whiteColor];
+            l.font = [UIFont systemFontOfSize:14];
+            l.textAlignment = NSTextAlignmentCenter;
+            [g_openingBar addSubview:l];
+        }
+        UILabel *l = (UILabel *)[g_openingBar viewWithTag:1];
+        l.text = name.length ? [NSString stringWithFormat:@"正在打开 %@…", name] : @"正在打开…";
+        g_openingBar.hidden = NO;
+        [g_triggerWin addSubview:g_openingBar];
+        poc_log(@"OPENING_SHOW %@", name ?: @"?");
+    } @catch (NSException *e) { }
+}
+static void poc_opening_hide(void) {
+    @try {
+        if (g_openingBar) g_openingBar.hidden = YES;
     } @catch (NSException *e) { }
 }
 
@@ -1856,6 +1898,7 @@ static void poc_picker_select(NSDictionary *app) {
         // v0.4.24: 未运行 → 启动应用，tick 持续轮询等待 scene 出现后建浮窗
         g_launchPending = YES;
         g_launchPendingAt = CACurrentMediaTime();
+        poc_opening_show(app[@"name"] ?: sid);   // v0.4.31: 立即"正在打开"反馈
         if (g_sceneActivationUsed) {
             // v0.4.30: 已由 collectionView:sceneActivationConfigurationForItemAtIndexPath:point:
             // 交给系统级激活（UIWindowSceneActivationConfiguration），不再重复启动
@@ -2192,14 +2235,15 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.30 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.31 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
         // v0.4.16: 右侧滑动应用选择器（Stheno 风格入口）
         poc_setup_edge_trigger();
         // v0.3.15: KEEP tick 3s → 1s —— 主屏回退响应提速（app 重新打开后 ≤1s 隐藏全屏，缓解双 host 白屏闪烁）
-        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *tm) {
+        // v0.4.31: 1s → 0.5s —— 点选未运行应用后 scene 检测延迟减半（用户反馈"卡顿一会才打开"）
+        NSTimer *t = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *tm) {
             poc_try_float();
             // v0.1.8: 窗口建立后不 invalidate —— 每 3s 进入保持模式（contextID 漂移检测）
         }];
