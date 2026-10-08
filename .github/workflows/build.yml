@@ -99,14 +99,15 @@ jobs:
               void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
               setProp(spec, NSSelectorFromString(@"setProperty:forKey:"), value, key);
           }
-          static id qs_mk(Class PS, id name, Class detail, int cell) {
+          // v0.4.49: link target 必须传 self——v0.4.48 传 nil 导致 iOS17 渲染灰色禁用不可点
+          static id qs_mk(Class PS, id name, id target, Class detail, int cell) {
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
               if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING preferenceSpecifierNamed\n"); return nil; }
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
-              return mk(PS, mkSel, name, nil, NULL, NULL, detail, cell, nil);
+              return mk(PS, mkSel, name, target, NULL, NULL, detail, cell, nil);
           }
-          static id qs_link(Class PS, NSString *label, NSString *file) {
-              id l = qs_mk(PS, label, NSClassFromString(@"PSChildPaneSpecifier"), 2);  // 2=link（v0.4.45 实测）
+          static id qs_link(Class PS, id target, NSString *label, NSString *file) {
+              id l = qs_mk(PS, label, target, NSClassFromString(@"PSChildPaneSpecifier"), 2);  // 2=link（v0.4.45 实测）
               if (!l) { qs_log(@"LINK_BUILD_FAIL %@\n", label); return nil; }
               qs_prop(l, file, @"file");
               return l;
@@ -118,11 +119,11 @@ jobs:
               if (!sp) {
                   Class PS = NSClassFromString(@"PSSpecifier");
                   if (PS) {
-                      id g = qs_mk(PS, @"", nil, 8);  // 8=group（v0.4.45 实测）
+                      id g = qs_mk(PS, @"", self, nil, 8);  // 8=group（v0.4.45 实测）
                       if (g) qs_prop(g, @"类 Stheno 浮动窗口（POC）。设置项在子页面，修改后需重启 SpringBoard 生效。", @"footerText");
 
-                      id tf = qs_link(PS, @"目标 App", @"Targets");
-                      id bh = qs_link(PS, @"窗口行为", @"QingSplitBehavior");
+                      id tf = qs_link(PS, self, @"目标 App", @"Targets");
+                      id bh = qs_link(PS, self, @"窗口行为", @"QingSplitBehavior");
 
                       NSMutableArray *arr = [NSMutableArray array];
                       if (g) [arr addObject:g]; else qs_log(@"GROUP_MISSING\n");
@@ -141,11 +142,39 @@ jobs:
           }
 
 
+          // v0.4.49: swizzle PSListController setPreferenceValue:specifier: —— 任何设置页开关（含子页原生 switch）点击都保底写 defaults + SET_CALLED 日志
+          static IMP qs_orig_setpref = NULL;
+          static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
+              @try {
+                  id key = nil, defaults = nil;
+                  if (spec) {
+                      key = [spec performSelector:@selector(propertyForKey:) withObject:@"key"];
+                      defaults = [spec performSelector:@selector(propertyForKey:) withObject:@"defaults"];
+                  }
+                  qs_log(@"SET_CALLED key=%@ val=%@ defaults=%@\n", key, value, defaults);
+                  if (key && defaults) {
+                      NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:defaults];
+                      [ud setObject:value forKey:key];
+                      [ud synchronize];
+                  }
+              } @catch (NSException *e) { qs_log(@"SET_EXC %@\n", e.name); }
+              if (qs_orig_setpref) {
+                  ((void(*)(id, SEL, id, id))qs_orig_setpref)(self, _cmd, value, spec);
+              }
+          }
           __attribute__((constructor))
           static void qs_prefs_bundle_init(void) {
               qs_log(@"PREFS_BUNDLE_LOADED pid=%d\n", getpid());
               Class ps = NSClassFromString(@"PSListController");
               if (!ps) { qs_log(@"NO_PSLISTCONTROLLER\n"); return; }
+              Method m = class_getInstanceMethod(ps, NSSelectorFromString(@"setPreferenceValue:specifier:"));
+              if (m) {
+                  qs_orig_setpref = method_getImplementation(m);
+                  method_setImplementation(m, (IMP)qs_swz_setpref);
+                  qs_log(@"SET_SWIZZLED\n");
+              } else {
+                  qs_log(@"SET_METHOD_MISSING\n");
+              }
               Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
               if (sub) {
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
@@ -193,5 +222,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.48_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.49_iphoneos-arm64e.deb
           if-no-files-found: warn
