@@ -173,7 +173,7 @@ jobs:
                       }
                   }
               } @catch (NSException *e) { qs_log(@"READ_EXC %@\n", e.name); }
-              if (qs_orig_readpref) return qs_orig_readpref(self, _cmd, specifier);
+              if (qs_orig_readpref) return ((id(*)(id, SEL, id))qs_orig_readpref)(self, _cmd, specifier);
               return nil;
           }
           // v0.4.53: bundleWithPath 硬编码路径在 Preferences 进程不可见（BUNDLE_PATH_FAIL）
