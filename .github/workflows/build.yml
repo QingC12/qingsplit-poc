@@ -164,6 +164,18 @@ jobs:
               }
           }
           EOF
+          # v0.4.44: 编译 fat 双架构（arm64 + arm64e，对齐 FloatingView universal binary），再 lipo 合成
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -isysroot "$SDK" \
+            -fobjc-arc \
+            -miphoneos-version-min=15.0 \
+            -dynamiclib \
+            -Xlinker -fixup_chains \
+            QingSplitPrefsRootListController.m \
+            -framework Foundation \
+            -framework UIKit \
+            -o QingSplitPrefs_arm64.dylib
           xcrun --sdk iphoneos clang \
             -arch arm64e \
             -isysroot "$SDK" \
@@ -174,7 +186,8 @@ jobs:
             QingSplitPrefsRootListController.m \
             -framework Foundation \
             -framework UIKit \
-            -o QingSplitPrefs.bundle/QingSplitPrefs
+            -o QingSplitPrefs_arm64e.dylib
+          lipo -create QingSplitPrefs_arm64.dylib QingSplitPrefs_arm64e.dylib -output QingSplitPrefs.bundle/QingSplitPrefs
           ldid -S QingSplitPrefs.bundle/QingSplitPrefs
           file QingSplitPrefs.bundle/QingSplitPrefs
           ls -l QingSplitPrefs.bundle/
@@ -188,5 +201,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.43_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.44_iphoneos-arm64e.deb
           if-no-files-found: warn

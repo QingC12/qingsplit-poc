@@ -29,14 +29,15 @@ PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
 PREFS_SRC = os.path.join(BASE, "QingSplitPrefs.plist")
 PREFS_BUNDLE_DIR = os.path.join(BASE, "QingSplitPrefs.bundle")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.4.43_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.4.44_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
-# v0.4.43 诊断版：静态 A/B 测试 —— 无 executable/controller，只装 spec + Root.plist（官方 PreferenceSpecifiers 顶层数组格式）
-# 若静态版可正常打开 → 问题在 controller/executable 层；若仍白屏 → bundle 路径/Root.plist/PreferenceLoader 层
+# v0.4.44: 恢复 executable（诊断结论：PreferenceLoader 只注册带 isController 的条目；白屏在 controller 层）
+# A/B 结论：静态无-controller 版在 Shuffle 聚合不显示 → 必须 bundle+executable；白屏用 QingSplitPrefs.log 定位
 PREFS_DEST = "var/jb/Library/PreferenceLoader/Preferences/QingSplitPrefs.plist"
 PREFS_BUNDLE_ROOT_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist"
+PREFS_BUNDLE_EXE_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/QingSplitPrefs"
 PREFS_BUNDLE_INFO_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Info.plist"
 
 def ar_member(name, data, mode=0o100644):
@@ -105,6 +106,7 @@ def main():
         ("var/jb/Library/PreferenceBundles/", None, True, 0o755),
         ("var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/", None, True, 0o755),
         (PREFS_BUNDLE_ROOT_DEST, os.path.join(PREFS_BUNDLE_DIR, "Root.plist"), False, 0o644),
+        (PREFS_BUNDLE_EXE_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitPrefs"), False, 0o755),
         (PREFS_BUNDLE_INFO_DEST, os.path.join(PREFS_BUNDLE_DIR, "Info.plist"), False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
