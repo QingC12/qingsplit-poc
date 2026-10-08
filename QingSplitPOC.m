@@ -34,6 +34,7 @@
 #import <objc/message.h>
 #import <unistd.h>
 #import <sys/stat.h>
+#import <math.h>   // v0.4.36: Arc 菜单三角函数（cos/sin/atan2/fabs/hypot/M_PI）
 
 // ----------------------------------------------------------------------------
 // 日志
@@ -1761,7 +1762,13 @@ static void poc_try_float(void) {
     // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
     // 在 POC_OK 后执行：若 SB 容器隐藏失败不影响浮窗（只日志）。
     // v0.4.0: 主屏回退开关（设置）
-    if (poc_setting_bool(@"screenHide", YES)) poc_screen_hide(sid);
+    // v0.4.36: 延迟 0.8s 再隐藏 —— 先让 host 内容渲染稳定（layer 刚挂载时 context 可能空窗，
+    // 立即隐藏 SB 呈现会让浮窗只显示手势指示、无内容）
+    if (poc_setting_bool(@"screenHide", YES)) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (g_win) poc_screen_hide(sid);
+        });
+    }
     // v0.1.7: 心跳日志验证主线程活性（若 10s/30s TICK 缺失 → 主线程被 host 阻塞）
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         poc_log(@"TICK_10S main-thread-alive");
@@ -1995,18 +2002,19 @@ static void poc_picker_show(void) {
             g_triggerWin.rootViewController = vc;
             g_pickerVC = vc;
         }
-        // 面板 —— v0.4.26: Myrtle 风格图标网格（4 列 × 55×90 cell，可见 3 行），全部应用可滚动；圆角 20 面板
+        // 面板 —— v0.4.36: Arc 圆弧菜单（ScreenCore/FloatingView 风格），右缘滑入触发
+        // 图标沿上半弧排布（圆心 (170,205)，半径 112），最多 8 个（运行中优先），面板 y 跟手
         UIView *panel = g_pickerPanel;
-        NSArray *apps = poc_all_apps();                    // v0.4.24: 运行中 + 全部已安装
+        NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
+        NSArray *apps = (allApps.count > 8) ? [allApps subarrayWithRange:NSMakeRange(0, 8)] : allApps;
         NSUInteger n = apps.count ? apps.count : 1;
-        const CGFloat cellW = 55.0, cellH = 90.0;
-        const int cols = 4;
-        const CGFloat pH = 54 + 270 + 20;                   // 标题 + 可见 3 行(270) + padding
-        const CGFloat panelY = MIN(337, 932 - pH - 20);     // 网格区顶部=panelY+54=391 对齐触发条
+        const CGFloat pw = 340, pH = 230;                 // Arc 面板尺寸
+        const CGFloat panelX = 430 - pw;                   // 贴右缘
+        const CGFloat panelY = MIN(150, 932 - pH - 20);
         if (!panel) {
-            panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, 220, pH)];
+            panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, pw, pH)];
             panel.backgroundColor = [UIColor colorWithWhite:0.12 alpha:0.92];
-            panel.layer.cornerRadius = 20;
+            panel.layer.cornerRadius = 24;
             panel.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMinXMaxYCorner;
             panel.clipsToBounds = YES;
             g_pickerPanel = panel;
@@ -2030,39 +2038,57 @@ static void poc_picker_show(void) {
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         g_pickerGrid = nil;
         // 标题
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(12, 12, 190, 30)];
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(14, 10, 240, 28)];
         title.text = @"选择要悬浮的应用";
         title.textColor = [UIColor whiteColor];
-        title.font = [UIFont boldSystemFontOfSize:15];
+        title.font = [UIFont boldSystemFontOfSize:14];
         [panel addSubview:title];
-        // 图标网格（Myrtle 风格）
-        UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
-        layout.itemSize = CGSizeMake(cellW, cellH);
-        layout.minimumInteritemSpacing = 0;
-        layout.minimumLineSpacing = 0;
-        layout.scrollDirection = UICollectionViewScrollDirectionVertical;
-        UICollectionView *grid = [[UICollectionView alloc] initWithFrame:CGRectMake(0, 54, 220, 270)
-                                                   collectionViewLayout:layout];
-        grid.backgroundColor = [UIColor clearColor];
-        grid.showsVerticalScrollIndicator = NO;
-        [grid registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"cell"];
-        if (!g_pickerDelegate) g_pickerDelegate = [[POCBootstrap alloc] init];
-        grid.dataSource = g_pickerDelegate;
-        grid.delegate = g_pickerDelegate;
+        // Arc 图标 —— 沿上半弧排布（θ 从 π(左) 到 0(右)，经顶部 π/2）
+        const CGFloat cx = 170, cy = 205, R = 112;
         if (!g_pickerSelFB) g_pickerSelFB = [[UISelectionFeedbackGenerator alloc] init];
         if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
         g_pickerApps = apps;
-        g_pickerGrid = grid;
-        [panel addSubview:grid];
-        [grid reloadData];
+        for (NSUInteger i = 0; i < n; i++) {
+            double theta = M_PI;
+            if (n > 1) theta = M_PI - (double)i * M_PI / (double)(n - 1);
+            CGFloat ix = cx + R * cos(theta);
+            CGFloat iy = cy - R * sin(theta);
+            NSDictionary *app = apps[i];
+            NSString *bid = app[@"bundle"] ?: @"";
+            NSString *name = app[@"name"] ?: bid;
+            UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+            b.frame = CGRectMake(0, 0, 56, 70);
+            b.center = CGPointMake(ix, iy);
+            b.tag = 600 + (NSInteger)i;
+            b.backgroundColor = [UIColor clearColor];
+            UIImage *icon = poc_picker_icon(bid);
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(8, 2, 40, 40)];
+            iv.contentMode = UIViewContentModeScaleAspectFit;
+            iv.layer.cornerRadius = 9;
+            iv.clipsToBounds = YES;
+            iv.image = icon;   // nil 时显示占位色块（兜底）
+            iv.backgroundColor = [UIColor colorWithWhite:0.32 alpha:0.9];
+            iv.userInteractionEnabled = NO;
+            [b addSubview:iv];
+            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 44, 56, 24)];
+            lb.text = name.length > 6 ? [name substringToIndex:6] : name;
+            lb.textColor = [UIColor whiteColor];
+            lb.font = [UIFont systemFontOfSize:10];
+            lb.textAlignment = NSTextAlignmentCenter;
+            lb.numberOfLines = 2;
+            lb.userInteractionEnabled = NO;
+            [b addSubview:lb];
+            [b addTarget:[POCBootstrap class] action:@selector(poc_picker_cell_tapped:) forControlEvents:UIControlEventTouchUpInside];
+            [panel addSubview:b];
+        }
         // 滑入动画（spring，Stheno 风格）
-        panel.frame = CGRectMake(430, panelY, 220, pH);
+        panel.frame = CGRectMake(430, panelY, pw, pH);
         panel.hidden = NO;
         [UIView animateWithDuration:0.3 delay:0 usingSpringWithDamping:0.82 initialSpringVelocity:0.4
                             options:UIViewAnimationOptionCurveEaseOut animations:^{
-            panel.frame = CGRectMake(202, panelY, 220, pH);
+            panel.frame = CGRectMake(panelX, panelY, pw, pH);
         } completion:nil];
-        poc_log(@"PICKER_SHOW apps=%ld panelY=%.0f grid=%@", (long)apps.count, panelY, poc_cls(grid));
+        poc_log(@"PICKER_SHOW apps=%ld arc=1", (long)apps.count);
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
     }
@@ -2089,11 +2115,12 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.20: 右缘触发条（20px 宽 × 150 高，屏幕中部）—— 只是触发起点，滑入后手指可自由在面板内上下移动选择
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 20, 391, 20, 150)];
+        // v0.4.36: 右缘触发条（24px 宽 × 260 高，屏幕中部偏上）—— Arc 菜单触发起点
+        // v0.4.20 原始 20×150 y=391；v0.4.36 加宽加高、提亮 alpha（用户反馈红线不可见）
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 24, 336, 24, 260)];
         strip.tag = 778;   // v0.4.28: backdrop 需要定位并提到最上
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
-        strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.3 blue:0.3 alpha:0.12];   // 触发区提示（可后续去掉）
+        strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.28 blue:0.28 alpha:0.28];   // 触发区提示（红线）
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
                                        initWithTarget:[POCBootstrap class]
                                        action:@selector(poc_edge_panned:)];
@@ -2236,7 +2263,8 @@ static void poc_setup_edge_trigger(void) {
 }
 
 + (void)poc_edge_panned:(UIPanGestureRecognizer *)g {
-    // v0.4.19: 跟手选择 —— 滑入弹选择器，手指在面板内上下移动高亮当前行，松手确认/关闭
+    // v0.4.36: Arc 圆弧菜单 —— 右缘滑入弹出，手指在弧上滑动高亮，松手确认/关闭
+    // 面板 y 跟手（v0.4.35），命中判定 = 手指与圆心的角度匹配最近图标（ScreenCore/FloatingView Arc 精神）
     CGPoint p = [g locationInView:g.view.window];   // v0.4.23: 窗口坐标=屏幕坐标（g.view 是触发条，其相对坐标与行判定空间不一致）
     if (g.state == UIGestureRecognizerStateBegan) {
         if (g_pickerPanel && !g_pickerPanel.hidden) poc_picker_hide();   // 重复滑入先收旧面板
@@ -2255,24 +2283,35 @@ static void poc_setup_edge_trigger(void) {
             ny = MAX(60.0, MIN(ny, 932.0 - pH - 20.0));   // clamp 屏幕内
             g_pickerPanel.center = CGPointMake(g_pickerPanel.center.x, ny);
         }
-        // 网格跟手高亮 —— v0.4.26: 手指位置 → cell（内容坐标 = 屏幕 y - 网格顶 + scroll offset）
-        if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerGrid && g_pickerApps.count) {
+        // v0.4.36: Arc 高亮 —— 手指位置 → 与圆心夹角 → 匹配最近图标（仅上半弧）
+        if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerApps.count) {
             CGRect pf = g_pickerPanel.frame;
-            CGFloat off = g_pickerGrid.contentOffset.y;
-            CGFloat gx = p.x - pf.origin.x;
-            CGFloat gy = (p.y - (pf.origin.y + 54)) + off;
-            int col = (int)(gx / 55.0), row = (int)(gy / 90.0);
-            int totalRows = (int)((g_pickerApps.count + 3) / 4);
+            const CGFloat cx = 170.0, cy = 205.0;
+            CGFloat dx = (p.x - pf.origin.x) - cx;
+            CGFloat dy = cy - (p.y - pf.origin.y);      // 面板内坐标（y 向下 → 向上为 +dy）
+            double ang = atan2(dy, dx);                  // [-π, π]
+            double rad = hypot(dx, dy);
+            NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
-            if (gx >= 0 && gx <= 220 && gy >= 0 && row >= 0 && row < totalRows) {
-                NSInteger cand = (NSInteger)row * 4 + col;
-                if (cand >= 0 && cand < (NSInteger)g_pickerApps.count) idx = cand;
+            if (rad >= 40 && rad <= 165 && dy >= -30) {  // 弧带内（上半区）
+                double best = 1e9;
+                for (NSUInteger i = 0; i < n; i++) {
+                    double theta = M_PI;
+                    if (n > 1) theta = M_PI - (double)i * M_PI / (double)(n - 1);
+                    double dth = fabs(ang - theta);
+                    if (dth > M_PI) dth = 2.0 * M_PI - dth;
+                    if (dth < best) { best = dth; idx = (NSInteger)i; }
+                }
+                double half = (n > 1) ? (M_PI / (double)(n - 1)) / 2.0 : M_PI / 2.0;
+                if (best > half + 0.12) idx = -1;        // 角度差超出半间距 → 空白
             }
-            for (NSInteger i = 0; i < (NSInteger)g_pickerApps.count; i++) {
-                UICollectionViewCell *cell = [g_pickerGrid cellForItemAtIndexPath:[NSIndexPath indexPathForItem:i inSection:0]];
-                if (!cell) continue;
+            for (UIView *sv in g_pickerPanel.subviews) {
+                if (![sv isKindOfClass:[UIButton class]]) continue;
+                NSInteger i = sv.tag - 600;
+                if (i < 0 || i >= (NSInteger)n) continue;
                 BOOL hl = (i == idx);
-                cell.backgroundColor = hl ? [UIColor colorWithWhite:1.0 alpha:0.18] : [UIColor clearColor];
+                sv.backgroundColor = hl ? [UIColor colorWithWhite:1.0 alpha:0.20] : [UIColor clearColor];
+                sv.layer.cornerRadius = hl ? 14 : 0;
                 if (hl && g_pickerSelFB) [g_pickerSelFB selectionChanged];   // 触觉反馈（Myrtle 特征）
             }
         }
@@ -2286,25 +2325,45 @@ static void poc_setup_edge_trigger(void) {
                 poc_picker_hide(); return;
             }
             CGRect pf = g_pickerPanel.frame;
-            CGFloat off = g_pickerGrid ? g_pickerGrid.contentOffset.y : 0;
-            CGFloat gx = p.x - pf.origin.x;
-            CGFloat gy = (p.y - (pf.origin.y + 54)) + off;
-            int col = (int)(gx / 55.0), row = (int)(gy / 90.0);
-            int totalRows = (int)((g_pickerApps.count + 3) / 4);
+            const CGFloat cx = 170.0, cy = 205.0;
+            CGFloat dx = (p.x - pf.origin.x) - cx;
+            CGFloat dy = cy - (p.y - pf.origin.y);
+            double ang = atan2(dy, dx);
+            double rad = hypot(dx, dy);
+            NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
-            if (gx >= -8 && gx <= 228 && gy >= -8 && row >= 0 && row < totalRows) {
-                NSInteger cand = (NSInteger)row * 4 + col;
-                if (cand >= 0 && cand < (NSInteger)g_pickerApps.count) idx = cand;
+            if (rad >= 36 && rad <= 170 && dy >= -36) {  // 松手容差略放宽
+                double best = 1e9;
+                for (NSUInteger i = 0; i < n; i++) {
+                    double theta = M_PI;
+                    if (n > 1) theta = M_PI - (double)i * M_PI / (double)(n - 1);
+                    double dth = fabs(ang - theta);
+                    if (dth > M_PI) dth = 2.0 * M_PI - dth;
+                    if (dth < best) { best = dth; idx = (NSInteger)i; }
+                }
+                double half = (n > 1) ? (M_PI / (double)(n - 1)) / 2.0 : M_PI / 2.0;
+                if (best > half + 0.16) idx = -1;
             }
             if (idx >= 0) {
                 if (g_pickerImpFB) [g_pickerImpFB impactOccurred];
                 poc_picker_select(g_pickerApps[idx]);   // 松手停在某 App 图标 → 浮窗打开（未运行则先启动）
             } else {
-                // v0.4.27: 松手空白不关闭 —— 选择器保持打开，方便继续浏览/点选；仅右滑回红线区关闭
+                // v0.4.27: 松手空白不关闭 —— 选择器保持打开，方便继续浏览/点按；仅右滑回红线区关闭
                 poc_log(@"PICKER_KEEP_OPEN y=%.0f", p.y);
             }
         }
     }
+}
+// v0.4.36: Arc 图标点按直接选择（面板停留时可用，KEEP_OPEN 后无需再滑）
++ (void)poc_picker_cell_tapped:(UIButton *)b {
+    @try {
+        NSInteger i = b.tag - 600;
+        if (i >= 0 && i < (NSInteger)g_pickerApps.count) {
+            if (g_pickerImpFB) [g_pickerImpFB impactOccurred];
+            poc_log(@"PICKER_TAP idx=%ld", (long)i);
+            poc_picker_select(g_pickerApps[i]);
+        }
+    } @catch (NSException *e) { }
 }
 // v0.4.28: 选择器打开期间点击面板外部（非右缘 strip）→ 关闭选择器
 + (void)poc_picker_backdrop:(UIButton *)b {
@@ -2315,7 +2374,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.35 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.36 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
