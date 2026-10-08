@@ -136,7 +136,15 @@ jobs:
               qs_log(@"SPECIFIERS_CALLED pid=%d\n", getpid());
               id sp = nil;
               @try {
-                  sp = [self loadSpecifiersFromPlistName:@"Root" target:self];
+                  // loadSpecifiersFromPlistName: 是 PSListController 私有方法，用 objc_msgSend 显式调用
+                  SEL loadSel = NSSelectorFromString(@"loadSpecifiersFromPlistName:target:");
+                  if ([self respondsToSelector:loadSel]) {
+                      id (*load)(id, SEL, id, id) = (id(*)(id, SEL, id, id))objc_msgSend;
+                      sp = load(self, loadSel, @"Root", self);
+                  } else {
+                      qs_log(@"LOAD_METHOD_MISSING\n");
+                      sp = nil;
+                  }
               } @catch (NSException *e) {
                   qs_log(@"LOAD_EXC %@\n", e.name);
                   sp = nil;
@@ -179,10 +187,6 @@ jobs:
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
                   objc_registerClassPair(sub);
                   qs_log(@"CLASS_REGISTERED QingSplitPrefsRootListController\n");
-              } else {
-                  qs_log(@"CLASS_EXISTS\n");
-              }
-          }
               } else {
                   qs_log(@"CLASS_EXISTS\n");
               }
