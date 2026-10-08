@@ -115,6 +115,25 @@ jobs:
           }
           static char kKeyAO; static char kDefaultsAO;
           static IMP qs_orig_setpref = NULL;
+          static IMP qs_orig_cellForRow = NULL;
+          // v0.4.61 渲染探针：cellForRowAtIndexPath: 打印真实渲染 cell 类 + spec key（iOS17 完整枚举映射，一次拿全）
+          static id qs_swz_cellForRow(id self, SEL _cmd, id tableView, id indexPath) {
+              id cell = ((id(*)(id, SEL, id, id))qs_orig_cellForRow)(self, _cmd, tableView, indexPath);
+              @try {
+                  id spec = nil;
+                  if (cell) spec = [cell valueForKey:@"specifier"];
+                  if (spec) {
+                      id ident = [spec valueForKey:@"identifier"];
+                      NSString *tag = @"";
+                      if ([ident isKindOfClass:[NSString class]]) tag = ident;
+                      int ct = 0;
+                      @try { ct = [[spec valueForKey:@"cellType"] intValue]; } @catch (NSException *e) {}
+                      qs_log(@"CELL_RENDER ident=%@ cellType=%d cellClass=%@\n",
+                             tag, ct, cell ? NSStringFromClass([cell class]) : @"nil");
+                  }
+              } @catch (NSException *e) { qs_log(@"CELLRENDER_EXC %@\n", e.name); }
+              return cell;
+          }
           static IMP qs_orig_readpref = NULL;
           // v0.4.55: 开关写入 —— iOS17 点击开关时传入的 spec 是内部对象（AO/propertyForKey 均读不到 key）
           // key 改从 identifier 读（构造时 set 的 qs_<key>，iOS 必保留）；写入直接落 SpringBoard 读取的同一 plist 文件
@@ -252,7 +271,7 @@ jobs:
               //（v0.4.53 传 6 渲染成 PSSwitchTableCell+UISwitch 且可点出 SET_CALLED；传 3 渲染成 group 不可点，用户只见 2 个"开关"= 2 个 group）
               if ([cellStr isEqualToString:@"PSGroupCell"]) cell = 3;
               else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 6;
-              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 1;   // 候选 edit（待校准）
+              else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 0;   // 候选 edit（1/2 已证是 link 进空页；0 待渲染探针校准）
               else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 2;
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
               if (![PS respondsToSelector:mkSel]) { qs_log(@"MK_MISSING\n"); return nil; }
@@ -382,6 +401,15 @@ jobs:
               } else {
                   qs_log(@"READ_METHOD_MISSING\n");
               }
+              // cellForRow 渲染探针：打印真实渲染 cell 类（iOS17 枚举校准）
+              Method mc = class_getInstanceMethod(ps, @selector(tableView:cellForRowAtIndexPath:));
+              if (mc) {
+                  qs_orig_cellForRow = method_getImplementation(mc);
+                  method_setImplementation(mc, (IMP)qs_swz_cellForRow);
+                  qs_log(@"CELL_SWIZZLED\n");
+              } else {
+                  qs_log(@"CELL_METHOD_MISSING\n");
+              }
               // 初始化默认值（CFPreferences，cfprefsd 落盘；仅未设置时写入）
               {
                   NSDictionary *def = @{ @"enabled": @YES, @"targets": @"", @"halfSnap": @YES,
@@ -441,5 +469,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.60_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.61_iphoneos-arm64e.deb
           if-no-files-found: warn
