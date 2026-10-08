@@ -134,24 +134,56 @@ jobs:
                   [d2 writeToFile:p2 atomically:YES];
               }
           }
-          // 从（可能是内部副本的）spec 取 key：① identifier（qs_ 前缀）② name 匹配 controller.specifiers → 原 spec 的 AO
+          // 从（iOS17 加工后的）spec 取 key —— v0.4.58 由 SET_DUMP 数据推出：
+          // spec.props 有 cellObject=PSSwitchTableCell / control=UISwitch，cell 有公开 specifier 属性指向原 spec（AO key 在其上）
           static id qs_key_from_spec(id self, id spec) {
               if (!spec) return nil;
-              id ident = [spec valueForKey:@"identifier"];
-              if ([ident isKindOfClass:[NSString class]] && [ident hasPrefix:@"qs_"]) {
-                  return [ident substringFromIndex:3];
-              }
-              NSString *name = [spec valueForKey:@"name"];
-              if (name) {
-                  NSArray *specs = [self valueForKey:@"specifiers"];
-                  for (id s in specs) {
-                      NSString *sname = [s valueForKey:@"name"];
-                      if (sname && [sname isEqualToString:name]) {
-                          id ao = objc_getAssociatedObject(s, &kKeyAO);
-                          if (ao) return ao;
+              // ① cellObject → cell.specifier → AO
+              @try {
+                  id cellObj = [spec performSelector:@selector(propertyForKey:) withObject:@"cellObject"];
+                  if (cellObj) {
+                      id os = [cellObj valueForKey:@"specifier"];
+                      if (os) {
+                          id ao = objc_getAssociatedObject(os, &kKeyAO);
+                          if (ao) { qs_log(@"KEY_VIA_CELLSPEC %@\n", ao); return ao; }
                       }
                   }
-              }
+              } @catch (NSException *e) { qs_log(@"CELLSPEC_EXC %@\n", e.name); }
+              // ② control → superview(cell) → specifier → AO
+              @try {
+                  id ctl = [spec performSelector:@selector(propertyForKey:) withObject:@"control"];
+                  if (ctl) {
+                      id cellV = [ctl superview];
+                      if (cellV) {
+                          id os = [cellV valueForKey:@"specifier"];
+                          if (os) {
+                              id ao = objc_getAssociatedObject(os, &kKeyAO);
+                              if (ao) { qs_log(@"KEY_VIA_CONTROL %@\n", ao); return ao; }
+                          }
+                      }
+                  }
+              } @catch (NSException *e) { qs_log(@"CONTROL_EXC %@\n", e.name); }
+              // ③ identifier（qs_ 前缀，KVC 读）
+              @try {
+                  id ident = [spec valueForKey:@"identifier"];
+                  if ([ident isKindOfClass:[NSString class]] && [ident hasPrefix:@"qs_"]) {
+                      return [ident substringFromIndex:3];
+                  }
+              } @catch (NSException *e) {}
+              // ④ name 匹配 controller.specifiers → 原 spec AO
+              @try {
+                  NSString *name = [spec valueForKey:@"name"];
+                  if (name) {
+                      NSArray *specs = [self valueForKey:@"specifiers"];
+                      for (id s in specs) {
+                          NSString *sname = [s valueForKey:@"name"];
+                          if (sname && [sname isEqualToString:name]) {
+                              id ao = objc_getAssociatedObject(s, &kKeyAO);
+                              if (ao) return ao;
+                          }
+                      }
+                  }
+              } @catch (NSException *e) {}
               return nil;
           }
           static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
@@ -248,6 +280,15 @@ jobs:
                   @catch (NSException *e) { qs_log(@"IDENT_SET_EXC %@\n", e.name); }
               }
               if (defaults) objc_setAssociatedObject(spec, &kDefaultsAO, defaults, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+              // 构造后 dump 验证：我们自己的 spec 上 key/footerText 到底在不在（区分"构造时丢失"vs"cell 加工时丢失"）
+              @try {
+                  qs_log(@"BUILD_DUMP spec=%p key=%@ def=%@ ident=%@ footer=%@\n",
+                         (__bridge void*)spec,
+                         [spec performSelector:@selector(propertyForKey:) withObject:@"key"],
+                         [spec performSelector:@selector(propertyForKey:) withObject:@"defaults"],
+                         [spec valueForKey:@"identifier"],
+                         [spec performSelector:@selector(propertyForKey:) withObject:@"footerText"]);
+              } @catch (NSException *e) { qs_log(@"BUILD_DUMP_EXC %@\n", e.name); }
               return spec;
           }
           static id qs_specifiers(id self, SEL _cmd) {
@@ -398,5 +439,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.57_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.58_iphoneos-arm64e.deb
           if-no-files-found: warn
