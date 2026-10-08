@@ -135,6 +135,8 @@ jobs:
           // v0.4.53: bundleWithPath 硬编码路径在 Preferences 进程不可见（BUNDLE_PATH_FAIL）
           // 从 dyld image 推导 bundle 路径（executable 已加载，其路径一定可见）；再优先 loadSpecifiersFromPlistName:target:bundle:
           // 若 bundleWithPath 仍失败 → 手动解析 Root.plist 并手动构造 PSSpecifier（cell 枚举按 libprefs 标准 + 读回 cellType 校准日志）
+          extern uint32_t _dyld_image_count(void);
+          extern const char *_dyld_get_image_name(uint32_t index) __attribute__((weak));
           static NSString *qs_bundle_path(void) {
               uint32_t cnt = _dyld_image_count();
               for (uint32_t i = 0; i < cnt; i++) {
@@ -147,7 +149,7 @@ jobs:
               return nil;
           }
           // 手动构造 PSSpecifier（libprefs 标准 cell 枚举；读回 cellType 校准）
-          static id qs_mk_spec(Class PS, id dict) {
+          static id qs_mk_spec(Class PS, id target, id dict) {
               NSString *cellStr = [dict objectForKey:@"cell"];
               NSString *label = [dict objectForKey:@"label"];
               NSString *key = [dict objectForKey:@"key"];
@@ -162,7 +164,7 @@ jobs:
               id (*mk)(id, SEL, id, id, SEL, SEL, id, int, id) = (id(*)(id, SEL, id, id, SEL, SEL, id, int, id))objc_msgSend;
               SEL setSel = NSSelectorFromString(@"setPreferenceValue:specifier:");
               SEL getSel = NSSelectorFromString(@"readPreferenceValue:");
-              id spec = mk(PS, mkSel, label, self, setSel, getSel, nil, cell, nil);
+              id spec = mk(PS, mkSel, label, target, setSel, getSel, nil, cell, nil);
               if (!spec) { qs_log(@"MK_RETURN_NIL %@\n", cellStr); return nil; }
               void (*setProp)(id, SEL, id, id) = (void(*)(id, SEL, id, id))objc_msgSend;
               SEL spSel = NSSelectorFromString(@"setProperty:forKey:");
@@ -215,7 +217,7 @@ jobs:
                       NSMutableArray *arr = [NSMutableArray array];
                       for (id d in items) {
                           if ([d isKindOfClass:[NSDictionary class]]) {
-                              id spec = qs_mk_spec(PS, d);
+                              id spec = qs_mk_spec(PS, self, d);
                               if (spec) {
                                   int ct = 0;
                                   @try { ct = [[spec valueForKey:@"cellType"] intValue]; } @catch (NSException *e) {}
