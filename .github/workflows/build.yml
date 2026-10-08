@@ -157,7 +157,7 @@ jobs:
           static void qs_swz_setpref(id self, SEL _cmd, id value, id spec) {
               @try {
                   // === 决定性 dump：看清传入 spec 上到底有什么 ===
-                  qs_log(@"SET_DUMP spec=%p class=%@\n", (void*)spec, spec ? NSStringFromClass([spec class]) : @"nil");
+                  qs_log(@"SET_DUMP spec=%p class=%@\n", (__bridge void*)spec, spec ? NSStringFromClass([spec class]) : @"nil");
                   if (spec) {
                       @try { qs_log(@"SET_DUMP name=%@\n", [spec valueForKey:@"name"]); } @catch (NSException *e) { qs_log(@"DUMP name EXC\n"); }
                       @try { qs_log(@"SET_DUMP ident=%@\n", [spec valueForKey:@"identifier"]); } @catch (NSException *e) { qs_log(@"DUMP ident EXC\n"); }
