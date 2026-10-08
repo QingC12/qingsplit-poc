@@ -121,18 +121,17 @@ jobs:
           static NSString *qs_cfg_path(void) {
               return @"/var/mobile/Library/Preferences/com.qingsplit.poc.plist";
           }
+          // v0.4.59: Preferences 进程有沙盒，writeToFile 直接写 /var/mobile/... 被静默拒绝（plutil 证明文件不存在）
+          // 唯一正道：CFPreferencesSetAppValue（cfprefsd 守护进程写入，无沙盒限制），SpringBoard 读同一域落盘文件
           static void qs_write_cfg(NSString *key, id value) {
-              NSString *path = qs_cfg_path();
-              NSMutableDictionary *d = [NSMutableDictionary dictionaryWithContentsOfFile:path];
-              if (!d) d = [NSMutableDictionary dictionary];
-              d[key] = value;
-              if (![d writeToFile:path atomically:YES]) {
-                  NSString *p2 = @"/var/mobile/Documents/com.qingsplit.poc.plist";
-                  NSMutableDictionary *d2 = [NSMutableDictionary dictionaryWithContentsOfFile:p2];
-                  if (!d2) d2 = [NSMutableDictionary dictionary];
-                  d2[key] = value;
-                  [d2 writeToFile:p2 atomically:YES];
-              }
+              CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("com.qingsplit.poc"));
+              CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
+              qs_log(@"CF_WRITE key=%@ val=%@\n", key, value);
+          }
+          static id qs_read_cfg(NSString *key) {
+              CFTypeRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.qingsplit.poc"));
+              if (v) return (__bridge id)v;
+              return nil;
           }
           // 从（iOS17 加工后的）spec 取 key —— v0.4.58 由 SET_DUMP 数据推出：
           // spec.props 有 cellObject=PSSwitchTableCell / control=UISwitch，cell 有公开 specifier 属性指向原 spec（AO key 在其上）
@@ -201,9 +200,6 @@ jobs:
                   qs_log(@"SET_CALLED key=%@ val=%@ defaults=com.qingsplit.poc\n", key, value);
                   if (key) {
                       qs_write_cfg(key, value);
-                      // CFPreferences 双写：SpringBoard 侧读取同一域
-                      CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("com.qingsplit.poc"));
-                      CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
                   }
               } @catch (NSException *e) { qs_log(@"SET_EXC %@\n", e.name); }
               if (qs_orig_setpref) {
@@ -216,10 +212,10 @@ jobs:
               @try {
                   id key = qs_key_from_spec(self, specifier);
                   if (key) {
-                      NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:qs_cfg_path()];
-                      if (d && d[key]) {
-                          qs_log(@"READ_CFG key=%@ val=%@\n", key, d[key]);
-                          return d[key];
+                      id v = qs_read_cfg(key);
+                      if (v) {
+                          qs_log(@"READ_CFG key=%@ val=%@\n", key, v);
+                          return v;
                       }
                   }
               } @catch (NSException *e) { qs_log(@"READ_EXC %@\n", e.name); }
@@ -384,12 +380,16 @@ jobs:
               } else {
                   qs_log(@"READ_METHOD_MISSING\n");
               }
-              // 初始化默认 plist（不存在则写，保证 SpringBoard 侧有默认值可读）
-              NSString *cfgPath = qs_cfg_path();
-              if (![[NSFileManager defaultManager] fileExistsAtPath:cfgPath]) {
+              // 初始化默认值（CFPreferences，cfprefsd 落盘；仅未设置时写入）
+              {
                   NSDictionary *def = @{ @"enabled": @YES, @"targets": @"", @"halfSnap": @YES,
                                          @"edgeSnap": @YES, @"screenHide": @YES, @"closeBtn": @YES };
-                  [def writeToFile:cfgPath atomically:YES];
+                  for (NSString *k in def) {
+                      if (!CFPreferencesCopyAppValue((__bridge CFStringRef)k, CFSTR("com.qingsplit.poc"))) {
+                          CFPreferencesSetAppValue((__bridge CFStringRef)k, (__bridge CFPropertyListRef)def[k], CFSTR("com.qingsplit.poc"));
+                      }
+                  }
+                  CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
                   qs_log(@"CFG_DEFAULT_WRITTEN\n");
               }
               Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
@@ -439,5 +439,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.58_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.59_iphoneos-arm64e.deb
           if-no-files-found: warn
