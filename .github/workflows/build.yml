@@ -238,9 +238,9 @@ jobs:
               }
               return nil;
           }
-          // v0.4.54: 手动构造 PSSpecifier
-          // iOS17 cell 枚举实测校准（v0.4.53 日志）：group=6 / switch=3（真开关，可点出 SET_CALLED）/ 2=link（点击进空页）
-          // PSEditTextCell 未知 → 先用 1（下一位候选），若渲染为静态文本/其他下一轮试 5/7
+          // v0.4.60: 手动构造 PSSpecifier
+          // iOS17 cell 枚举实测（SET_DUMP 数据）：6=PSSwitchCell（真开关，带 UISwitch）/ 3=PSGroupCell / 2=PSLinkCell（点击进空页）
+          // PSEditTextCell=1 候选；libprefs 的 group=6/switch=3 在 iOS17 完全相反
           // key/defaults 用 associated object 存（propertyForKey: 读回 null，保底写入会失败）
           static id qs_mk_spec(Class PS, id target, id dict) {
               NSString *cellStr = [dict objectForKey:@"cell"];
@@ -248,8 +248,10 @@ jobs:
               NSString *key = [dict objectForKey:@"key"];
               NSString *defaults = [dict objectForKey:@"defaults"];
               int cell = 0;
-              if ([cellStr isEqualToString:@"PSGroupCell"]) cell = 6;
-              else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 3;
+              // v0.4.60: cell 枚举按 SET_DUMP 实测修正 —— iOS17 与 libprefs 相反：6=PSSwitchCell(真开关)、3=PSGroupCell
+              //（v0.4.53 传 6 渲染成 PSSwitchTableCell+UISwitch 且可点出 SET_CALLED；传 3 渲染成 group 不可点，用户只见 2 个"开关"= 2 个 group）
+              if ([cellStr isEqualToString:@"PSGroupCell"]) cell = 3;
+              else if ([cellStr isEqualToString:@"PSSwitchCell"]) cell = 6;
               else if ([cellStr isEqualToString:@"PSEditTextCell"]) cell = 1;   // 候选 edit（待校准）
               else if ([cellStr isEqualToString:@"PSLinkCell"]) cell = 2;
               SEL mkSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
@@ -439,5 +441,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.59_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.60_iphoneos-arm64e.deb
           if-no-files-found: warn
