@@ -27,18 +27,14 @@ def find_dylib():
 
 PLIST_SRC = os.path.join(BASE, "QingSplitPOC.plist")
 PREFS_SRC = os.path.join(BASE, "QingSplitPrefs.plist")
-PREFS_BUNDLE_DIR = os.path.join(BASE, "QingSplitPrefs.bundle")
 CONTROL_SRC = os.path.join(BASE, "control")
-OUT = os.path.join(BASE, "QingSplitPOC_0.4.39_iphoneos-arm64e.deb")
+OUT = os.path.join(BASE, "QingSplitPOC_0.4.40_iphoneos-arm64e.deb")
 
 DYLIB_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.dylib"
 PLIST_DEST = "var/jb/Library/MobileSubstrate/DynamicLibraries/QingSplitPOC.plist"
-# v0.4.0+: PreferenceLoader 设置页 —— 入口 spec（PreferenceLoader/Preferences/）
+# v0.4.40: PreferenceLoader 设置页 —— plist-only 模式（无需 executable，Shuffle 兼容）
+# 之前 bundle 模式缺可执行文件 → 白屏/加载失败；现 spec 内直接定义 specifiers
 PREFS_DEST = "var/jb/Library/PreferenceLoader/Preferences/QingSplitPrefs.plist"
-# v0.4.2/0.4.3: 设置页 bundle 模式（与 Stheno 相同：PSLinkCell → bundle → RootListController）
-PREFS_BUNDLE_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/"
-PREFS_BUNDLE_ROOT_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Root.plist"
-PREFS_BUNDLE_EXE_DEST = "var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/QingSplitPrefs"
 
 def ar_member(name, data, mode=0o100644):
     mtime = int(time.time())
@@ -103,12 +99,6 @@ def main():
         ("var/jb/Library/PreferenceLoader/", None, True, 0o755),
         ("var/jb/Library/PreferenceLoader/Preferences/", None, True, 0o755),
         (PREFS_DEST, PREFS_SRC, False, 0o644),
-        ("var/jb/Library/PreferenceBundles/", None, True, 0o755),
-        ("var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/", None, True, 0o755),
-        (PREFS_BUNDLE_ROOT_DEST, os.path.join(PREFS_BUNDLE_DIR, "Root.plist"), False, 0o644),
-        (PREFS_BUNDLE_EXE_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitPrefs"), False, 0o755),
-        ("var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle/Info.plist",
-         os.path.join(PREFS_BUNDLE_DIR, "Info.plist"), False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
 

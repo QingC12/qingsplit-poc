@@ -2036,9 +2036,11 @@ static void poc_picker_show(void) {
         NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
         NSArray *apps = (allApps.count > 8) ? [allApps subarrayWithRange:NSMakeRange(0, 8)] : allApps;
         NSUInteger n = apps.count ? apps.count : 1;
-        const CGFloat pw = 200, pH = 310;                 // 透明坐标容器（承载图标布局 + 跟手）
+        const CGFloat pw = 200, pH = 310;                 // 透明坐标容器（承载图标布局）
         const CGFloat panelX = 430 - pw;                   // 右缘贴齐
-        const CGFloat panelY = MIN(140, 932 - pH - 20);
+        // v0.4.40: 面板固定对齐红线中心（红线 14×200 @ y 732..932 → 中心 y=832）；
+        // 圆心面板内 (pw,155) → 屏内圆心 y = panelY+155 = 800（红线区内），图标 y 668..932 全在屏内
+        const CGFloat panelY = 645;
         if (!panel) {
             panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, pw, pH)];
             panel.backgroundColor = [UIColor clearColor];  // 去面板背景（图标直接悬浮）
@@ -2136,9 +2138,9 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.39: 右缘触发条（14px 宽 × 280 高，屏幕高度 30%，位置右缘下方）—— Arc 菜单触发起点
-        // v0.4.20 原始 20×150 y=391；v0.4.36 加宽加高提亮；v0.4.39 按用户要求改细改短、移到下方 30%
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 14, 932 - 280 - 52, 14, 280)];
+        // v0.4.40: 右缘触发条（14px 宽 × 200 高，屏幕右下贴底）—— Arc 菜单触发起点
+        // v0.4.20 原始 20×150 y=391；v0.4.36 加宽加高；v0.4.39 下方 30%；v0.4.40 再缩短贴右下
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 14, 932 - 200, 14, 200)];
         strip.tag = 778;   // v0.4.28: backdrop 需要定位并提到最上
         strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
         strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.28 blue:0.28 alpha:0.28];   // 触发区提示（红线）
@@ -2385,7 +2387,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.39 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.40 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
