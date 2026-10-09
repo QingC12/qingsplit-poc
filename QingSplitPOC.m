@@ -2140,8 +2140,8 @@ static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat
     CGFloat W = scr.size.width, H = scr.size.height;
     CGFloat pw = 200.0;
     CGFloat cx = W - 24.0;                  // 圆心屏内 x（右缘偏左，图标向左展开）
-    // v0.4.80: 内少外多 —— 圈容量 4/6/8 递增，最多 3 圈 18 个；cyS/R 随圈数（最低图标 y ≤ 880）
-    NSUInteger rings = (n <= 4) ? 1 : ((n <= 10) ? 2 : 3);
+    // v0.4.81: 内少外多 —— 圈容量 6/8/10 递增（间隔紧凑），最多 3 圈 24 个；cyS/R 随圈数
+    NSUInteger rings = (n <= 6) ? 1 : ((n <= 14) ? 2 : 3);
     CGFloat cyS = (rings >= 3) ? MIN(H - 150.0, 640.0)
                : ((rings == 2) ? MIN(H - 150.0, 660.0) : MIN(H - 150.0, 700.0));
     CGFloat R = MIN(110.0, (880.0 - cyS) / 0.94);
@@ -2172,7 +2172,7 @@ static void poc_picker_show(void) {
         // 圆心固定在右缘 (430, 155)，半径 140，图标沿 θ 110°→250°（正左 180°）均匀排布，最多 8 个
         UIView *panel = g_pickerPanel;
         NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
-        NSArray *apps = (allApps.count > 18) ? [allApps subarrayWithRange:NSMakeRange(0, 18)] : allApps;   // v0.4.79: 每圈 6 个，最多 3 圈 18
+        NSArray *apps = (allApps.count > 24) ? [allApps subarrayWithRange:NSMakeRange(0, 24)] : allApps;   // v0.4.81: 内6/中8/外10，最多 24
         NSUInteger n = apps.count ? apps.count : 1;
         CGFloat gx, gy, gR, gPX, gPY;
         poc_picker_geo(n, &gx, &gy, &gR, &gPX, &gPY);      // v0.4.73: 动态几何
@@ -2213,8 +2213,8 @@ static void poc_picker_show(void) {
         if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
         g_pickerApps = apps;
         for (NSUInteger i = 0; i < n; i++) {
-            // v0.4.80: 内少外多 —— 圈容量 {4,6,8} 递增；ring/j/ringTotal 映射，圈半径 R + ring*62
-            NSUInteger ringCap[3] = {4, 6, 8};
+            // v0.4.81: 内少外多 —— 圈容量 {6,8,10} 递增；ring/j/ringTotal 映射，圈半径 R + ring*62
+            NSUInteger ringCap[3] = {6, 8, 10};
             NSUInteger ring = 0, cum = 0;
             for (NSUInteger r = 0; r < 3; r++) {
                 if (i < cum + ringCap[r]) { ring = r; break; }
@@ -2274,7 +2274,7 @@ static void poc_picker_show(void) {
         poc_log(@"PICKER_SHOW apps=%ld arcL=1 R=%.0f", (long)apps.count, R);
         // v0.4.77: 探针 —— 几何 + 每个图标的屏内中心（供命中比对）
         for (NSUInteger pi = 0; pi < n; pi++) {
-            NSUInteger ringCap[3] = {4, 6, 8};
+            NSUInteger ringCap[3] = {6, 8, 10};
             NSUInteger pring = 0, pcum = 0;
             for (NSUInteger r = 0; r < 3; r++) {
                 if (pi < pcum + ringCap[r]) { pring = r; break; }
@@ -2506,7 +2506,7 @@ static void poc_setup_edge_trigger(void) {
             NSInteger idx = -1;
             double best = 1e9;
             for (NSUInteger i = 0; i < n; i++) {   // v0.4.80: 内少外多命中（圈容量 4/6/8）
-                NSUInteger ringCap[3] = {4, 6, 8};
+                NSUInteger ringCap[3] = {6, 8, 10};
                 NSUInteger ring = 0, cum = 0;
                 for (NSUInteger r = 0; r < 3; r++) {
                     if (i < cum + ringCap[r]) { ring = r; break; }
@@ -2570,7 +2570,7 @@ static void poc_setup_edge_trigger(void) {
             NSInteger idx = -1;
             double best = 1e9;
             for (NSUInteger i = 0; i < n; i++) {   // v0.4.80: 内少外多命中（圈容量 4/6/8）
-                NSUInteger ringCap[3] = {4, 6, 8};
+                NSUInteger ringCap[3] = {6, 8, 10};
                 NSUInteger ring = 0, cum = 0;
                 for (NSUInteger r = 0; r < 3; r++) {
                     if (i < cum + ringCap[r]) { ring = r; break; }
@@ -2620,7 +2620,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.80 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.81 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");

@@ -8,6 +8,8 @@
 		<string>PSLinkCell</string>
 		<key>label</key>
 		<string>QingSplit</string>
+		<key>icon</key>
+		<string>icon.png</string>
 		<key>bundle</key>
 		<string>QingSplitPrefs</string>
 		<key>detail</key>

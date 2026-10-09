@@ -384,8 +384,11 @@ jobs:
               return arr;
           }
           // v0.4.65: 目标应用开关直接内嵌主设置页（link/detail 子页在 iOS17 手动 spec 下 CFSet 检查崩溃，废弃）
+          // v0.4.81: 所有目标应用开关统一放入"目标应用"父分组（PSGroupCell，cell=3 已验证安全）
           static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
               @try {
+                  id grp = qs_mk_spec(PS, self, @{@"cell":@"PSGroupCell", @"label":@"目标应用"});
+                  if (grp) [arr addObject:grp];
                   Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
                   if (!wsCls) { qs_log(@"TARGETS_WS MISSING\n"); return; }
                   id ws = [wsCls performSelector:@selector(defaultWorkspace)];
@@ -586,5 +589,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.80_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.81_iphoneos-arm64e.deb
           if-no-files-found: warn
