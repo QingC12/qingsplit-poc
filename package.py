@@ -114,6 +114,8 @@ def main():
         (PREFS_BUNDLE_INFO_DEST, os.path.join(PREFS_BUNDLE_DIR, "Info.plist"), False, 0o644),
         (PREFS_BUNDLE_TARGETS_DEST, os.path.join(PREFS_BUNDLE_DIR, "Targets.plist"), False, 0o644),
         (PREFS_BUNDLE_BEHAVIOR_DEST, os.path.join(PREFS_BUNDLE_DIR, "QingSplitBehavior.plist"), False, 0o644),
+        (PREFS_BUNDLE_ICON_DEST, os.path.join(PREFS_BUNDLE_DIR, "icon.png"), False, 0o644),
+        (PREFS_BUNDLE_ICON2X_DEST, os.path.join(PREFS_BUNDLE_DIR, "icon@2x.png"), False, 0o644),
     ]
     data_xz = tar_xz_from_files(files)
 
