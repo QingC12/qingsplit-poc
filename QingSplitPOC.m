@@ -2127,6 +2127,21 @@ static void poc_picker_select(NSDictionary *app) {
     poc_picker_hide();
 }
 
+// v0.4.73: 选择器几何动态适配屏幕（iPhone 15 Pro 393×852 下原圆心 y=800+R*sin250° 掉出屏底）
+static void poc_picker_geo(CGFloat *cxOut, CGFloat *cyOut, CGFloat *rOut, CGFloat *panelXOut, CGFloat *panelYOut) {
+    CGRect scr = [UIScreen mainScreen].bounds;
+    CGFloat W = scr.size.width, H = scr.size.height;
+    CGFloat pw = 200.0;
+    CGFloat cx = W - 24.0;                  // 圆心屏内 x（右缘偏左，图标向左展开）
+    CGFloat cyS = MIN(H - 150.0, 720.0);    // 圆心屏内 y（保证上方留空间）
+    CGFloat R = MIN(140.0, (H - cyS - 36.0) / 0.94);   // 约束：最低图标 y ≤ H-36
+    R = MIN(R, cx - 16.0);                  // 约束：最左图标 x ≥ 16
+    if (cxOut) *cxOut = cx;
+    if (cyOut) *cyOut = cyS;
+    if (rOut) *rOut = R;
+    if (panelXOut) *panelXOut = cx - pw;
+    if (panelYOut) *panelYOut = cyS - 155.0;
+}
 static void poc_picker_show(void) {
     @try {
         g_sceneActivationUsed = NO;           // v0.4.30: 每次打开选择器重置系统级激活标记
@@ -2144,13 +2159,12 @@ static void poc_picker_show(void) {
         NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
         NSArray *apps = (allApps.count > 8) ? [allApps subarrayWithRange:NSMakeRange(0, 8)] : allApps;
         NSUInteger n = apps.count ? apps.count : 1;
-        const CGFloat pw = 200, pH = 310;                 // 透明坐标容器（承载图标布局）
-        const CGFloat panelX = 430 - pw;                   // 右缘贴齐
-        // v0.4.40: 面板固定对齐红线中心（红线 14×200 @ y 732..932 → 中心 y=832）；
-        // 圆心面板内 (pw,155) → 屏内圆心 y = panelY+155 = 800（红线区内），图标 y 668..932 全在屏内
-        const CGFloat panelY = 645;
+        CGFloat gx, gy, gR, gPX, gPY;
+        poc_picker_geo(&gx, &gy, &gR, &gPX, &gPY);         // v0.4.73: 动态几何
+        const CGFloat pw = 200, pH = 310;
+        const CGFloat panelX = gPX, panelY = gPY;
         if (!panel) {
-            panel = [[UIView alloc] initWithFrame:CGRectMake(430, panelY, pw, pH)];
+            panel = [[UIView alloc] initWithFrame:CGRectMake(panelX, panelY, pw, pH)];
             panel.backgroundColor = [UIColor clearColor];  // 去面板背景（图标直接悬浮）
             g_pickerPanel = panel;
             [g_pickerVC.view addSubview:panel];
@@ -2172,9 +2186,9 @@ static void poc_picker_show(void) {
         if (back2) back2.hidden = NO;
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         g_pickerGrid = nil;
-        // 图标 —— 以右缘为圆心向左侧展开（圆心=手势起点：面板内 (pw, cyP)，屏内 x=430 右缘，y 跟手）
-        const CGFloat cyP = 155.0;                          // 圆心 y（面板内坐标，面板跟手 → 屏内 cy = panelY + 155）
-        const CGFloat R = 140.0;
+        // 图标 —— 以右缘为圆心向左侧展开（v0.4.73 动态几何：gx/gy 屏内圆心，gR 半径）
+        const CGFloat cyP = 155.0;
+        const CGFloat R = gR;
         // θ 110°→250°（经正左 180°），n 个均匀分布（n=1 → 180°）
         if (!g_pickerSelFB) g_pickerSelFB = [[UISelectionFeedbackGenerator alloc] init];
         if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
@@ -2410,10 +2424,10 @@ static void poc_setup_edge_trigger(void) {
         // v0.4.39: 选择器固定 —— 面板不再跟手（用户反馈来回移动不舒服），位置固定（panelY=140）
         // v0.4.38: Arc 高亮 —— 右缘圆心 (pw,155)，R=140，θ 110°→250°，角度匹配最近图标
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerApps.count) {
-            CGRect pf = g_pickerPanel.frame;
-            const CGFloat pw = 200.0, cyP = 155.0, R = 140.0;
-            CGFloat dx = (p.x - pf.origin.x) - pw;
-            CGFloat dy = cyP - (p.y - pf.origin.y);
+            CGFloat gx, gy, gR; poc_picker_geo(&gx, &gy, &gR, NULL, NULL);   // v0.4.73: 动态几何
+            const CGFloat R = gR;
+            CGFloat dx = p.x - gx;
+            CGFloat dy = gy - p.y;
             double ang = atan2(dy, dx);
             double rad = hypot(dx, dy);
             NSUInteger n = g_pickerApps.count;
@@ -2447,10 +2461,10 @@ static void poc_setup_edge_trigger(void) {
                 poc_log(@"PICKER_SWIPE_CLOSE t=%.0f v=%.0f", t.x, v.x);
                 poc_picker_hide(); return;
             }
-            CGRect pf = g_pickerPanel.frame;
-            const CGFloat pw = 200.0, cyP = 155.0, R = 140.0;
-            CGFloat dx = (p.x - pf.origin.x) - pw;
-            CGFloat dy = cyP - (p.y - pf.origin.y);
+            CGFloat gx, gy, gR; poc_picker_geo(&gx, &gy, &gR, NULL, NULL);   // v0.4.73: 动态几何
+            const CGFloat R = gR;
+            CGFloat dx = p.x - gx;
+            CGFloat dy = gy - p.y;
             double ang = atan2(dy, dx);
             double rad = hypot(dx, dy);
             NSUInteger n = g_pickerApps.count;
@@ -2495,7 +2509,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.72 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.73 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
