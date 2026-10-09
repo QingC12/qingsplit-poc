@@ -1090,7 +1090,17 @@ static NSArray *poc_state_paths(void) {
 static NSDictionary *poc_settings(void) {
     for (NSString *p in poc_state_paths()) {
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
-        if (d) return d;
+        if (d) {
+            // v0.4.67: 探针 —— 确认 SpringBoard 读到哪个路径、有多少 target key
+            static int s_logged = 0;
+            if (s_logged < 3) {
+                NSUInteger tc = 0;
+                for (NSString *k in d) if ([k hasPrefix:@"target_"]) tc++;
+                poc_log(@"SETTINGS_READ path=%@ targetKeys=%lu totalKeys=%lu", p, (unsigned long)tc, (unsigned long)[d count]);
+                s_logged++;
+            }
+            return d;
+        }
     }
     return nil;
 }
@@ -2427,7 +2437,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.66 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.67 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");

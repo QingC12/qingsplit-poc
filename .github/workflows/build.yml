@@ -146,6 +146,18 @@ jobs:
               CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("com.qingsplit.poc"));
               CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
               qs_log(@"CF_WRITE key=%@ val=%@\n", key, value);
+              // v0.4.67: 文件双写（Preferences 沙盒内真实路径可写）—— SpringBoard 文件读取路径必命中
+              @try {
+                  NSString *path = qs_cfg_path();
+                  NSMutableDictionary *pd = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+                  if (!pd) pd = [NSMutableDictionary dictionary];
+                  pd[key] = value;
+                  if ([pd writeToFile:path atomically:YES]) {
+                      qs_log(@"FILE_WRITE key=%@ val=%@\n", key, value);
+                  } else {
+                      qs_log(@"FILE_WRITE_FAIL key=%@\n", key);
+                  }
+              } @catch (NSException *e) { qs_log(@"FILE_WRITE_EXC %@\n", e.name); }
           }
           static id qs_read_cfg(NSString *key) {
               CFTypeRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.qingsplit.poc"));
@@ -482,6 +494,20 @@ jobs:
                   }
                   CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
                   qs_log(@"CFG_DEFAULT_WRITTEN\n");
+                  // v0.4.67: 默认值同时落盘文件，SpringBoard 直接文件读取
+                  @try {
+                      NSString *path = qs_cfg_path();
+                      NSMutableDictionary *pd = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+                      if (!pd) pd = [NSMutableDictionary dictionary];
+                      for (NSString *k in def) {
+                          if (!pd[k]) pd[k] = def[k];
+                      }
+                      if ([pd writeToFile:path atomically:YES]) {
+                          qs_log(@"FILE_DEFAULT_WRITTEN keys=%lu\n", (unsigned long)[pd count]);
+                      } else {
+                          qs_log(@"FILE_DEFAULT_FAIL\n");
+                      }
+                  } @catch (NSException *e) { qs_log(@"FILE_DEFAULT_EXC %@\n", e.name); }
               }
               Class sub = objc_allocateClassPair(ps, "QingSplitPrefsRootListController", 0);
               if (sub) {
@@ -531,5 +557,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.66_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.67_iphoneos-arm64e.deb
           if-no-files-found: warn
