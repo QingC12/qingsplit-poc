@@ -1097,9 +1097,13 @@ static NSDictionary *poc_settings(void) {
             if (now - s_lastLog > 2.0) {
                 s_lastLog = now;
                 NSUInteger tc = 0;
-                for (NSString *k in d) if ([k hasPrefix:@"target_"]) tc++;
+                NSMutableArray *names = [NSMutableArray array];
+                for (NSString *k in d) {
+                    if ([k hasPrefix:@"target_"]) tc++;
+                    if (names.count < 6) [names addObject:k];
+                }
                 NSString *ts = d[@"targets"];
-                poc_log(@"SETTINGS_READ path=%@ targetKeys=%lu totalKeys=%lu targetsStr=%@", p, (unsigned long)tc, (unsigned long)[d count], ts ?: @"(nil)");
+                poc_log(@"SETTINGS_READ path=%@ targetKeys=%lu totalKeys=%lu targetsStr=%@ keys=%@", p, (unsigned long)tc, (unsigned long)[d count], ts ?: @"(nil)", [names componentsJoinedByString:@","]);
             }
             return d;
         }
@@ -1891,8 +1895,24 @@ static BOOL poc_launch_app(NSString *bundle) {
 }
 
 // v0.4.66: target 配置过滤 —— 设置了任何 target（字符串或 target_* 开关）→ 选择器只显示开启的应用
+// v0.4.71: CFPreferences 域直读 targets 聚合字符串（cfprefsd 全局共享，与文件覆盖解耦）
+static NSString *poc_cfprefs_targets(void) {
+    @try {
+        CFTypeRef v = CFPreferencesCopyAppValue(CFSTR("targets"), CFSTR("com.qingsplit.poc"));
+        if (v && CFGetTypeID(v) == CFStringGetTypeID()) {
+            NSString *s = (__bridge NSString *)v;
+            static CFTimeInterval s_last = 0;
+            CFTimeInterval now = CACurrentMediaTime();
+            if (now - s_last > 2.0) { s_last = now; poc_log(@"CFREAD targets=%@", s); }
+            return s;
+        }
+    } @catch (NSException *e) { }
+    return nil;
+}
 static BOOL poc_has_targets_config(void) {
-    NSString *ts = poc_setting_str(@"targets", @"");
+    NSString *ts = poc_cfprefs_targets();
+    if (ts && ts.length) return YES;
+    ts = poc_setting_str(@"targets", @"");
     if (ts.length) return YES;
     NSDictionary *all = poc_settings();
     for (NSString *k in all) if ([k hasPrefix:@"target_"]) return YES;
@@ -1900,7 +1920,8 @@ static BOOL poc_has_targets_config(void) {
 }
 static BOOL poc_target_enabled(NSString *bid) {
     if (!bid.length) return NO;
-    NSString *ts = poc_setting_str(@"targets", @"");
+    NSString *ts = poc_cfprefs_targets();
+    if (!ts) ts = poc_setting_str(@"targets", @"");
     if (ts.length) {
         for (NSString *w in [ts componentsSeparatedByString:@","]) {
             if ([[w stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] isEqualToString:bid]) return YES;
@@ -2470,7 +2491,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.70 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.71 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");

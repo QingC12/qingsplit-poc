@@ -160,20 +160,22 @@ jobs:
                   } else {
                       qs_log(@"FILE_WRITE_SKIP unreadable key=%@\n", key);
                   }
-                  // v0.4.69: 写 target_* 时同步聚合 targets 字符串（SpringBoard 单 key 读取兜底）
+                  // v0.4.71: 写 target_* 时聚合 targets 字符串 —— 基于 CFPreferences 旧值合并（不依赖文件可读）
                   if ([key hasPrefix:@"target_"]) {
+                      NSString *bid = [key substringFromIndex:7];
                       NSMutableArray *on = [NSMutableArray array];
-                      NSMutableDictionary *all = [NSMutableDictionary dictionaryWithContentsOfFile:path];
-                      if (all) {
-                          for (NSString *k in all) {
-                              if ([k hasPrefix:@"target_"] && [all[k] boolValue]) {
-                                  [on addObject:[k substringFromIndex:7]];
-                              }
+                      CFTypeRef oldV = CFPreferencesCopyAppValue(CFSTR("targets"), CFSTR("com.qingsplit.poc"));
+                      if (oldV && CFGetTypeID(oldV) == CFStringGetTypeID()) {
+                          NSString *oldTs = (__bridge NSString *)oldV;
+                          for (NSString *w in [oldTs componentsSeparatedByString:@","]) {
+                              NSString *t = [w stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                              if (t.length && ![on containsObject:t]) [on addObject:t];
                           }
                       }
                       if ([value boolValue]) {
-                          NSString *bid = [key substringFromIndex:7];
                           if (![on containsObject:bid]) [on addObject:bid];
+                      } else {
+                          [on removeObject:bid];
                       }
                       NSString *joined = [on componentsJoinedByString:@","];
                       CFPreferencesSetAppValue(CFSTR("targets"), (__bridge CFPropertyListRef)joined, CFSTR("com.qingsplit.poc"));
@@ -584,5 +586,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.70_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.71_iphoneos-arm64e.deb
           if-no-files-found: warn
