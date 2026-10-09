@@ -2134,20 +2134,20 @@ static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat
     CGFloat W = scr.size.width, H = scr.size.height;
     CGFloat pw = 200.0;
     CGFloat cx = W - 24.0;                  // 圆心屏内 x（右缘偏左，图标向左展开）
-    // v0.4.75: 圆心再上移，最低图标 y ≤ 780（避开屏幕底部系统手势区 y>790）
-    CGFloat cyS = (n > 8) ? MIN(H - 150.0, 600.0) : MIN(H - 150.0, 660.0);
-    CGFloat R = MIN(140.0, (780.0 - cyS) / 0.94);      // 约束：最低图标 y ≤ 780
+    // v0.4.76: 选择器缩小(R≤118)并整体下移(单圈700/两圈640, 约屏高4~5%)；最低图标 y ≤ 880（932 屏避开底部手势区）
+    CGFloat cyS = (n > 8) ? MIN(H - 150.0, 640.0) : MIN(H - 150.0, 700.0);
+    CGFloat R = MIN(118.0, (880.0 - cyS) / 0.94);      // 约束：最低图标 y ≤ 880
     R = MIN(R, cx - 16.0);                  // 约束：最左图标 x ≥ 16
     if (n > 8) {
         // 外圈半径 = R + 62 → 反推内圈 R 上限
-        CGFloat Rmax = MIN((780.0 - cyS) / 0.94 - 62.0, cx - 16.0 - 62.0);
+        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 62.0, cx - 16.0 - 62.0);
         if (R > Rmax) R = Rmax;
     }
     if (cxOut) *cxOut = cx;
     if (cyOut) *cyOut = cyS;
     if (rOut) *rOut = R;
     if (panelXOut) *panelXOut = cx - pw;
-    if (panelYOut) *panelYOut = cyS - 155.0;
+    if (panelYOut) *panelYOut = cyS - 175.0;   // v0.4.76: 圆心面板内 y=175，顶部留 20pt 给外圈上方图标
 }
 static void poc_picker_show(void) {
     @try {
@@ -2169,7 +2169,7 @@ static void poc_picker_show(void) {
         CGFloat gx, gy, gR, gPX, gPY;
         poc_picker_geo(n, &gx, &gy, &gR, &gPX, &gPY);      // v0.4.73: 动态几何
         const CGFloat pw = 200;
-        const CGFloat pH = ceil(155.0 + 0.94 * (gR + (n > 8 ? 62.0 : 0.0)) + 44.0);   // v0.4.75: 面板高度容纳外圈最下端，外圈图标可点按
+        const CGFloat pH = ceil(175.0 + 0.94 * (gR + (n > 8 ? 62.0 : 0.0)) + 24.0);   // v0.4.76: 面板高度容纳外圈最下端
         // v0.4.75: 手势指引图标随圆心对齐（红线指示 → 小指引）
         UIView *qind = [g_pickerVC.view viewWithTag:781];
         if (qind) qind.center = CGPointMake(gx, gy);
@@ -2198,7 +2198,7 @@ static void poc_picker_show(void) {
         [panel.subviews makeObjectsPerformSelector:@selector(removeFromSuperview)];
         g_pickerGrid = nil;
         // 图标 —— 以右缘为圆心向左侧展开（v0.4.73 动态几何：gx/gy 屏内圆心，gR 半径）
-        const CGFloat cyP = 155.0;
+        const CGFloat cyP = 175.0;   // v0.4.76: 面板内圆心下移（配合 panelY=cyS-175）
         const CGFloat R = gR;
         // θ 110°→250°（经正左 180°），n 个均匀分布（n=1 → 180°）
         if (!g_pickerSelFB) g_pickerSelFB = [[UISelectionFeedbackGenerator alloc] init];
@@ -2218,23 +2218,23 @@ static void poc_picker_show(void) {
             NSString *bid = app[@"bundle"] ?: @"";
             NSString *name = app[@"name"] ?: bid;
             UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-            b.frame = CGRectMake(0, 0, 52, 66);
+            b.frame = CGRectMake(0, 0, 44, 58);   // v0.4.76: 缩小图标
             b.center = CGPointMake(ix, iy);
             b.tag = 600 + (NSInteger)i;
             b.backgroundColor = [UIColor clearColor];
             UIImage *icon = poc_picker_icon(bid);
-            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(6, 1, 40, 40)];
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(4, 1, 36, 36)];
             iv.contentMode = UIViewContentModeScaleAspectFit;
-            iv.layer.cornerRadius = 9;
+            iv.layer.cornerRadius = 8;
             iv.clipsToBounds = YES;
             iv.image = icon;   // nil 时显示占位色块（兜底）
             iv.backgroundColor = [UIColor colorWithWhite:0.32 alpha:0.9];
             iv.userInteractionEnabled = NO;
             [b addSubview:iv];
-            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 42, 52, 22)];
+            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 38, 44, 18)];
             lb.text = name.length > 6 ? [name substringToIndex:6] : name;
             lb.textColor = [UIColor whiteColor];
-            lb.font = [UIFont systemFontOfSize:10];
+            lb.font = [UIFont systemFontOfSize:9];
             lb.textAlignment = NSTextAlignmentCenter;
             lb.numberOfLines = 2;
             lb.userInteractionEnabled = NO;
@@ -2550,7 +2550,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.75 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.76 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
