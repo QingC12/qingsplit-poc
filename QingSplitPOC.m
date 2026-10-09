@@ -1878,6 +1878,26 @@ static BOOL poc_launch_app(NSString *bundle) {
     return NO;
 }
 
+// v0.4.66: target 配置过滤 —— 设置了任何 target（字符串或 target_* 开关）→ 选择器只显示开启的应用
+static BOOL poc_has_targets_config(void) {
+    NSString *ts = poc_setting_str(@"targets", @"");
+    if (ts.length) return YES;
+    NSDictionary *all = poc_settings();
+    for (NSString *k in all) if ([k hasPrefix:@"target_"]) return YES;
+    return NO;
+}
+static BOOL poc_target_enabled(NSString *bid) {
+    if (!bid.length) return NO;
+    NSString *ts = poc_setting_str(@"targets", @"");
+    if (ts.length) {
+        for (NSString *w in [ts componentsSeparatedByString:@","]) {
+            if ([[w stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] isEqualToString:bid]) return YES;
+        }
+    }
+    NSDictionary *all = poc_settings();
+    id v = all[[@"target_" stringByAppendingString:bid]];
+    return [v boolValue];
+}
 // v0.4.24: 全部可选择应用 = 运行中（优先）+ 已安装（按名称排序，取前 maxRows）
 static NSArray *poc_all_apps(void) {
     // v0.4.29: 5s 缓存 —— 打开选择器不再每次全量枚举（LSApplicationWorkspace 慢），避免主线程卡屏
@@ -1917,6 +1937,14 @@ static NSArray *poc_all_apps(void) {
         NSString *na = a[@"name"] ?: @"", *nb = b[@"name"] ?: @"";
         return [na compare:nb options:NSCaseInsensitiveSearch];
     }];
+    // v0.4.66: 设置了 target 配置 → 只返回开启的应用（开关才真正生效）
+    if (poc_has_targets_config()) {
+        NSMutableArray *f = [NSMutableArray array];
+        for (NSDictionary *a in sortedNotRun) {
+            if (poc_target_enabled(a[@"bundle"])) [f addObject:a];
+        }
+        sortedNotRun = f;
+    }
     g_pickerAppsCache = sortedNotRun;                       // v0.4.29
     g_pickerAppsCacheAt = CACurrentMediaTime();
     return sortedNotRun;
@@ -2399,7 +2427,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.65 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.66 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
