@@ -2218,12 +2218,12 @@ static void poc_picker_show(void) {
             NSString *bid = app[@"bundle"] ?: @"";
             NSString *name = app[@"name"] ?: bid;
             UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-            b.frame = CGRectMake(0, 0, 44, 58);   // v0.4.76: 缩小图标
+            b.frame = CGRectMake(0, 0, 40, 54);   // v0.4.77: 内圈不拥挤，图标再缩小
             b.center = CGPointMake(ix, iy);
             b.tag = 600 + (NSInteger)i;
             b.backgroundColor = [UIColor clearColor];
             UIImage *icon = poc_picker_icon(bid);
-            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(4, 1, 36, 36)];
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(4, 1, 32, 32)];
             iv.contentMode = UIViewContentModeScaleAspectFit;
             iv.layer.cornerRadius = 8;
             iv.clipsToBounds = YES;
@@ -2231,7 +2231,7 @@ static void poc_picker_show(void) {
             iv.backgroundColor = [UIColor colorWithWhite:0.32 alpha:0.9];
             iv.userInteractionEnabled = NO;
             [b addSubview:iv];
-            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 38, 44, 18)];
+            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 34, 40, 18)];
             lb.text = name.length > 6 ? [name substringToIndex:6] : name;
             lb.textColor = [UIColor whiteColor];
             lb.font = [UIFont systemFontOfSize:9];
@@ -2250,6 +2250,18 @@ static void poc_picker_show(void) {
             panel.frame = CGRectMake(panelX, panelY, pw, pH);
         } completion:nil];
         poc_log(@"PICKER_SHOW apps=%ld arcL=1 R=%.0f", (long)apps.count, R);
+        // v0.4.77: 探针 —— 几何 + 每个图标的屏内中心（供命中比对）
+        for (NSUInteger pi = 0; pi < n; pi++) {
+            NSUInteger pring = (pi < 8) ? 0 : 1;
+            NSUInteger pj = (pi < 8) ? pi : (pi - 8);
+            NSUInteger pcnt = (pi < 8) ? ((n > 8) ? 8 : n) : (n - 8);
+            double pth = M_PI;
+            if (pcnt > 1) pth = 110.0 * M_PI / 180.0 + (double)pj * (140.0 * M_PI / 180.0) / (double)(pcnt - 1);
+            double prr = (pring == 0) ? R : (R + 62.0);
+            poc_log(@"PICKER_ICON i=%ld ring=%ld th=%.0f rr=%.0f c=(%.0f,%.0f)",
+                    (long)pi, (long)pring, pth * 180.0 / M_PI, prr,
+                    gx + prr * cos(pth), gy - prr * sin(pth));
+        }
     } @catch (NSException *e) {
         poc_log(@"PICKER_SHOW_EXC %@", e.name);
     }
@@ -2479,6 +2491,14 @@ static void poc_setup_edge_trigger(void) {
                 if (score < best) { best = score; idx = (NSInteger)i; }
             }
             if (best > 46.0) idx = -1;   // 超出容差 → 空白
+            // v0.4.77: 探针 —— 命中判定输入/输出（0.25s 节流）
+            static double lastHitLog = 0;
+            double nowT = [[NSProcessInfo processInfo] systemUptime];
+            if (nowT - lastHitLog > 0.25) {
+                lastHitLog = nowT;
+                poc_log(@"PICKER_HIT p=(%.0f,%.0f) g=(%.0f,%.0f) ang=%.0f rad=%.0f best=%.1f idx=%ld R=%.0f n=%ld",
+                        p.x, p.y, gx, gy, ang * 180.0 / M_PI, rad, best, (long)idx, R, (long)n);
+            }
             for (UIView *sv in g_pickerPanel.subviews) {
                 if (![sv isKindOfClass:[UIButton class]]) continue;
                 NSInteger i = sv.tag - 600;
@@ -2520,6 +2540,7 @@ static void poc_setup_edge_trigger(void) {
                 if (score < best) { best = score; idx = (NSInteger)i; }
             }
             if (best > 50.0) idx = -1;   // 松手容差略放宽
+            poc_log(@"PICKER_END p=(%.0f,%.0f) ang=%.0f rad=%.0f best=%.1f idx=%ld", p.x, p.y, ang * 180.0 / M_PI, rad, best, (long)idx);
             if (idx >= 0) {
                 if (g_pickerImpFB) [g_pickerImpFB impactOccurred];
                 poc_picker_select(g_pickerApps[idx]);   // 松手停在某 App 图标 → 浮窗打开（未运行则先启动）
@@ -2550,7 +2571,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.76 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.77 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
