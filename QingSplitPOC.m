@@ -1091,13 +1091,15 @@ static NSDictionary *poc_settings(void) {
     for (NSString *p in poc_state_paths()) {
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
         if (d) {
-            // v0.4.67: 探针 —— 确认 SpringBoard 读到哪个路径、有多少 target key
-            static int s_logged = 0;
-            if (s_logged < 3) {
+            // v0.4.68: 持续探针（2s 降频）—— 抓设置后的读取状态
+            static CFTimeInterval s_lastLog = 0;
+            CFTimeInterval now = CACurrentMediaTime();
+            if (now - s_lastLog > 2.0) {
+                s_lastLog = now;
                 NSUInteger tc = 0;
                 for (NSString *k in d) if ([k hasPrefix:@"target_"]) tc++;
-                poc_log(@"SETTINGS_READ path=%@ targetKeys=%lu totalKeys=%lu", p, (unsigned long)tc, (unsigned long)[d count]);
-                s_logged++;
+                NSString *ts = d[@"targets"];
+                poc_log(@"SETTINGS_READ path=%@ targetKeys=%lu totalKeys=%lu targetsStr=%@", p, (unsigned long)tc, (unsigned long)[d count], ts ?: @"(nil)");
             }
             return d;
         }
@@ -1948,6 +1950,7 @@ static NSArray *poc_all_apps(void) {
         return [na compare:nb options:NSCaseInsensitiveSearch];
     }];
     // v0.4.66: 设置了 target 配置 → 只返回开启的应用（开关才真正生效）
+    NSUInteger before = [sortedNotRun count];
     if (poc_has_targets_config()) {
         NSMutableArray *f = [NSMutableArray array];
         for (NSDictionary *a in sortedNotRun) {
@@ -1955,6 +1958,8 @@ static NSArray *poc_all_apps(void) {
         }
         sortedNotRun = f;
     }
+    // v0.4.68: 过滤探针 —— 每次打开选择器记录过滤前后数量
+    poc_log(@"TARGET_FILTER before=%lu after=%lu hasConfig=%d", (unsigned long)before, (unsigned long)[sortedNotRun count], poc_has_targets_config());
     g_pickerAppsCache = sortedNotRun;                       // v0.4.29
     g_pickerAppsCacheAt = CACurrentMediaTime();
     return sortedNotRun;
@@ -2437,7 +2442,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.67 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.68 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
