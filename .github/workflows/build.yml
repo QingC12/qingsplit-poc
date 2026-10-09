@@ -384,16 +384,15 @@ jobs:
               return arr;
           }
           // v0.4.65: 目标应用开关直接内嵌主设置页（link/detail 子页在 iOS17 手动 spec 下 CFSet 检查崩溃，废弃）
-          // v0.4.81: 所有目标应用开关统一放入"目标应用"父分组（PSGroupCell，cell=3 已验证安全）
+          // v0.4.83: Root.plist 已含"目标应用"组头（index2）→ 开关统一插入其后（index=3），消除重复分组、真正收纳
           static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
               @try {
-                  id grp = qs_mk_spec(PS, self, @{@"cell":@"PSGroupCell", @"label":@"目标应用"});
-                  if (grp) [arr addObject:grp];
                   Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
                   if (!wsCls) { qs_log(@"TARGETS_WS MISSING\n"); return; }
                   id ws = [wsCls performSelector:@selector(defaultWorkspace)];
                   NSArray *apps = [ws performSelector:@selector(allApplications)];
                   qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
+                  NSMutableArray *sw = [NSMutableArray array];
                   for (id proxy in apps) {
                       NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
                       NSString *name = [proxy performSelector:@selector(localizedName)];
@@ -403,8 +402,15 @@ jobs:
                                           @"key":[@"target_" stringByAppendingString:bid],
                                           @"defaults":@"com.qingsplit.poc"};
                       id spec = qs_mk_spec(PS, self, d);
-                      if (spec) [arr addObject:spec];
+                      if (spec) [sw addObject:spec];
                   }
+                  qs_log(@"TARGETS_SW %lu\n", (unsigned long)[sw count]);
+                  // 插入到"目标应用"组头（index 2）之后 —— 视觉上全部开关收纳在该分组下
+                  NSUInteger ins = 3;
+                  if ((NSUInteger)[arr count] < ins) ins = (NSUInteger)[arr count];
+                  NSIndexSet *is = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(ins, [sw count])];
+                  [arr insertObjects:sw atIndexes:is];
+                  qs_log(@"TARGETS_INSERTED at=%lu count=%lu\n", (unsigned long)ins, (unsigned long)[sw count]);
               } @catch (NSException *e) { qs_log(@"TARGETS_EXC %@\n", e.name); }
           }
           static id qs_specifiers(id self, SEL _cmd) {
@@ -596,5 +602,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.82_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.83_iphoneos-arm64e.deb
           if-no-files-found: warn
