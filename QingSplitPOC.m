@@ -1910,12 +1910,40 @@ static BOOL poc_target_enabled(NSString *bid) {
     id v = all[[@"target_" stringByAppendingString:bid]];
     return [v boolValue];
 }
+// v0.4.70: 判断应用是否有 foregroundActive 的 scene（全屏前台或浮窗内活跃）
+static BOOL poc_is_foreground_active(NSString *bundle) {
+    if (!bundle.length) return NO;
+    for (id sc in poc_all_scenes()) {
+        NSString *sid = poc_scene_id(sc);
+        if (![sid hasPrefix:@"sceneID:"]) continue;
+        if (![sid hasPrefix:[@"sceneID:" stringByAppendingString:bundle]]) continue;
+        @try {
+            NSInteger act = (NSInteger)[sc performSelector:@selector(activationState)];
+            // FBSSceneActivationState: 2 = foregroundActive
+            if (act == 2) {
+                poc_log(@"FRONT_SCENE sid=%@ act=%ld", sid, (long)act);
+                return YES;
+            }
+        } @catch (NSException *e) { }
+    }
+    return NO;
+}
 // v0.4.24: 全部可选择应用 = 运行中（优先）+ 已安装（按名称排序，取前 maxRows）
 static NSArray *poc_all_apps(void) {
     // v0.4.29: 5s 缓存 —— 打开选择器不再每次全量枚举（LSApplicationWorkspace 慢），避免主线程卡屏
     CFTimeInterval now = CACurrentMediaTime();
     if (g_pickerAppsCache && (now - g_pickerAppsCacheAt) < 5.0) return g_pickerAppsCache;
     NSArray *running = poc_running_apps();
+    // v0.4.70: 排除前台（foregroundActive）应用 —— 选择器不显示当前正在前台的应用
+    NSMutableArray *runningNoFront = [NSMutableArray array];
+    for (NSDictionary *a in running) {
+        if (poc_is_foreground_active(a[@"bundle"])) {
+            poc_log(@"PICKER_SKIP_FRONT %@", a[@"bundle"]);
+            continue;
+        }
+        [runningNoFront addObject:a];
+    }
+    running = runningNoFront;
     NSMutableArray *all = [NSMutableArray arrayWithArray:running];
     NSMutableSet *seen = [NSMutableSet set];
     for (NSDictionary *a in running) [seen addObject:a[@"bundle"]];
@@ -2442,7 +2470,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.69 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.70 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
