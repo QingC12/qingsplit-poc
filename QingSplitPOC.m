@@ -1124,9 +1124,13 @@ static void poc_save_float_state(CGRect f) {
                             @"w": @(f.size.width), @"h": @(f.size.height)};
         BOOL saved = NO;
         for (NSString *p in poc_state_paths()) {
-            if ([d writeToFile:p atomically:YES]) {
+            // v0.4.72: 合并写 —— 只更新 ox/oy/w/h，保留文件内全部现有 key（target_* 等）
+            NSMutableDictionary *pd = [NSMutableDictionary dictionaryWithContentsOfFile:p];
+            if (!pd) continue;   // 读不到文件内容则跳过，绝不覆盖
+            for (NSString *k in d) pd[k] = d[k];
+            if ([pd writeToFile:p atomically:YES]) {
                 saved = YES;
-                poc_log(@"STATE_SAVE %@ %@", NSStringFromCGRect(f), p);
+                poc_log(@"STATE_SAVE_MERGED %@ %@ keys=%lu", NSStringFromCGRect(f), p, (unsigned long)[pd count]);
                 break;
             }
         }
@@ -2491,7 +2495,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.71 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.72 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
