@@ -2485,12 +2485,14 @@ static void poc_setup_edge_trigger(void) {
                 double theta = M_PI;
                 if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
                 double rr = (ring == 0) ? R : (R + 62.0);
+                // v0.4.78: 角度差归一化修正 —— 原实现 |ang-θ|∈(π,2π) 时 2π-dAng 变负（下半屏图标 θ>180° 受影响，选中失效）
                 double dAng = fabs(ang - theta);
+                dAng = fmod(dAng, 2.0 * M_PI);
                 if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
                 double score = fabs(rad - rr) + rr * dAng;   // 径向差 + 弧长差
                 if (score < best) { best = score; idx = (NSInteger)i; }
             }
-            if (best > 46.0) idx = -1;   // 超出容差 → 空白
+            if (best > 62.0) idx = -1;   // v0.4.78: 容差放宽（图标 40 宽，允许约 20° 角度偏差）
             // v0.4.77: 探针 —— 命中判定输入/输出（0.25s 节流）
             static double lastHitLog = 0;
             double nowT = [[NSProcessInfo processInfo] systemUptime];
@@ -2534,12 +2536,14 @@ static void poc_setup_edge_trigger(void) {
                 double theta = M_PI;
                 if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
                 double rr = (ring == 0) ? R : (R + 62.0);
+                // v0.4.78: 角度差归一化修正（同 Changed）
                 double dAng = fabs(ang - theta);
+                dAng = fmod(dAng, 2.0 * M_PI);
                 if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
                 double score = fabs(rad - rr) + rr * dAng;
                 if (score < best) { best = score; idx = (NSInteger)i; }
             }
-            if (best > 50.0) idx = -1;   // 松手容差略放宽
+            if (best > 66.0) idx = -1;   // v0.4.78: 松手容差放宽
             poc_log(@"PICKER_END p=(%.0f,%.0f) ang=%.0f rad=%.0f best=%.1f idx=%ld", p.x, p.y, ang * 180.0 / M_PI, rad, best, (long)idx);
             if (idx >= 0) {
                 if (g_pickerImpFB) [g_pickerImpFB impactOccurred];
