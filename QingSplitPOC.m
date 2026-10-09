@@ -2128,14 +2128,20 @@ static void poc_picker_select(NSDictionary *app) {
 }
 
 // v0.4.73: 选择器几何动态适配屏幕（iPhone 15 Pro 393×852 下原圆心 y=800+R*sin250° 掉出屏底）
-static void poc_picker_geo(CGFloat *cxOut, CGFloat *cyOut, CGFloat *rOut, CGFloat *panelXOut, CGFloat *panelYOut) {
+// v0.4.74: n>8 内外两圈并存时，圆心再上移、内圈半径收紧，为外圈(+62pt)让出屏幕空间
+static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat *rOut, CGFloat *panelXOut, CGFloat *panelYOut) {
     CGRect scr = [UIScreen mainScreen].bounds;
     CGFloat W = scr.size.width, H = scr.size.height;
     CGFloat pw = 200.0;
     CGFloat cx = W - 24.0;                  // 圆心屏内 x（右缘偏左，图标向左展开）
-    CGFloat cyS = MIN(H - 150.0, 720.0);    // 圆心屏内 y（保证上方留空间）
+    CGFloat cyS = (n > 8) ? MIN(H - 150.0, 645.0) : MIN(H - 150.0, 720.0);
     CGFloat R = MIN(140.0, (H - cyS - 36.0) / 0.94);   // 约束：最低图标 y ≤ H-36
     R = MIN(R, cx - 16.0);                  // 约束：最左图标 x ≥ 16
+    if (n > 8) {
+        // 外圈半径 = R + 62 → 反推内圈 R 上限
+        CGFloat Rmax = MIN((H - cyS - 36.0) / 0.94 - 62.0, cx - 16.0 - 62.0);
+        if (R > Rmax) R = Rmax;
+    }
     if (cxOut) *cxOut = cx;
     if (cyOut) *cyOut = cyS;
     if (rOut) *rOut = R;
@@ -2157,10 +2163,10 @@ static void poc_picker_show(void) {
         // 圆心固定在右缘 (430, 155)，半径 140，图标沿 θ 110°→250°（正左 180°）均匀排布，最多 8 个
         UIView *panel = g_pickerPanel;
         NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
-        NSArray *apps = (allApps.count > 8) ? [allApps subarrayWithRange:NSMakeRange(0, 8)] : allApps;
+        NSArray *apps = (allApps.count > 16) ? [allApps subarrayWithRange:NSMakeRange(0, 16)] : allApps;   // v0.4.74: 内外两圈最多 16
         NSUInteger n = apps.count ? apps.count : 1;
         CGFloat gx, gy, gR, gPX, gPY;
-        poc_picker_geo(&gx, &gy, &gR, &gPX, &gPY);         // v0.4.73: 动态几何
+        poc_picker_geo(n, &gx, &gy, &gR, &gPX, &gPY);      // v0.4.73: 动态几何
         const CGFloat pw = 200, pH = 310;
         const CGFloat panelX = gPX, panelY = gPY;
         if (!panel) {
@@ -2194,10 +2200,15 @@ static void poc_picker_show(void) {
         if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
         g_pickerApps = apps;
         for (NSUInteger i = 0; i < n; i++) {
-            double theta = M_PI;                            // 180°
-            if (n > 1) theta = 110.0 * M_PI / 180.0 + (double)i * (140.0 * M_PI / 180.0) / (double)(n - 1);
-            CGFloat ix = pw + R * cos(theta);               // 面板内 x（圆心面板内 (pw, cyP)）
-            CGFloat iy = cyP - R * sin(theta);              // 面板内 y
+            // v0.4.74: 内外两圈 —— 内圈前 8 个 (R)，外圈其余 (R+62)；θ 各圈内部 110°..250° 均分
+            NSUInteger ring = (i < 8) ? 0 : 1;
+            NSUInteger j = (i < 8) ? i : (i - 8);
+            NSUInteger cnt = (i < 8) ? ((n > 8) ? 8 : n) : (n - 8);
+            double theta = M_PI;                            // 180°（单点）
+            if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
+            CGFloat rr = (ring == 0) ? R : (R + 62.0);
+            CGFloat ix = pw + rr * cos(theta);              // 面板内 x（圆心面板内 (pw, cyP)）
+            CGFloat iy = cyP - rr * sin(theta);             // 面板内 y
             NSDictionary *app = apps[i];
             NSString *bid = app[@"bundle"] ?: @"";
             NSString *name = app[@"name"] ?: bid;
@@ -2424,7 +2435,7 @@ static void poc_setup_edge_trigger(void) {
         // v0.4.39: 选择器固定 —— 面板不再跟手（用户反馈来回移动不舒服），位置固定（panelY=140）
         // v0.4.38: Arc 高亮 —— 右缘圆心 (pw,155)，R=140，θ 110°→250°，角度匹配最近图标
         if (g_pickerPanel && !g_pickerPanel.hidden && g_pickerApps.count) {
-            CGFloat gx, gy, gR; poc_picker_geo(&gx, &gy, &gR, NULL, NULL);   // v0.4.73: 动态几何
+            CGFloat gx, gy, gR; poc_picker_geo(g_pickerApps.count, &gx, &gy, &gR, NULL, NULL);   // v0.4.73: 动态几何
             const CGFloat R = gR;
             CGFloat dx = p.x - gx;
             CGFloat dy = gy - p.y;
@@ -2433,12 +2444,16 @@ static void poc_setup_edge_trigger(void) {
             NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
             double best = 1e9;
-            for (NSUInteger i = 0; i < n; i++) {
+            for (NSUInteger i = 0; i < n; i++) {   // v0.4.74: 内外两圈命中
+                NSUInteger ring = (i < 8) ? 0 : 1;
+                NSUInteger j = (i < 8) ? i : (i - 8);
+                NSUInteger cnt = (i < 8) ? ((n > 8) ? 8 : n) : (n - 8);
                 double theta = M_PI;
-                if (n > 1) theta = 110.0 * M_PI / 180.0 + (double)i * (140.0 * M_PI / 180.0) / (double)(n - 1);
+                if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
+                double rr = (ring == 0) ? R : (R + 62.0);
                 double dAng = fabs(ang - theta);
                 if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
-                double score = fabs(rad - R) + R * dAng;   // 径向差 + 弧长差
+                double score = fabs(rad - rr) + rr * dAng;   // 径向差 + 弧长差
                 if (score < best) { best = score; idx = (NSInteger)i; }
             }
             if (best > 46.0) idx = -1;   // 超出容差 → 空白
@@ -2461,7 +2476,7 @@ static void poc_setup_edge_trigger(void) {
                 poc_log(@"PICKER_SWIPE_CLOSE t=%.0f v=%.0f", t.x, v.x);
                 poc_picker_hide(); return;
             }
-            CGFloat gx, gy, gR; poc_picker_geo(&gx, &gy, &gR, NULL, NULL);   // v0.4.73: 动态几何
+            CGFloat gx, gy, gR; poc_picker_geo(g_pickerApps.count, &gx, &gy, &gR, NULL, NULL);   // v0.4.73: 动态几何
             const CGFloat R = gR;
             CGFloat dx = p.x - gx;
             CGFloat dy = gy - p.y;
@@ -2470,12 +2485,16 @@ static void poc_setup_edge_trigger(void) {
             NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
             double best = 1e9;
-            for (NSUInteger i = 0; i < n; i++) {
+            for (NSUInteger i = 0; i < n; i++) {   // v0.4.74: 内外两圈命中
+                NSUInteger ring = (i < 8) ? 0 : 1;
+                NSUInteger j = (i < 8) ? i : (i - 8);
+                NSUInteger cnt = (i < 8) ? ((n > 8) ? 8 : n) : (n - 8);
                 double theta = M_PI;
-                if (n > 1) theta = 110.0 * M_PI / 180.0 + (double)i * (140.0 * M_PI / 180.0) / (double)(n - 1);
+                if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
+                double rr = (ring == 0) ? R : (R + 62.0);
                 double dAng = fabs(ang - theta);
                 if (dAng > M_PI) dAng = 2.0 * M_PI - dAng;
-                double score = fabs(rad - R) + R * dAng;
+                double score = fabs(rad - rr) + rr * dAng;
                 if (score < best) { best = score; idx = (NSInteger)i; }
             }
             if (best > 50.0) idx = -1;   // 松手容差略放宽
@@ -2509,7 +2528,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.73 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.74 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
