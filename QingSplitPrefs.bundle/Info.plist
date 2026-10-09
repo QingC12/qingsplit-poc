@@ -15,15 +15,16 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.81</string>
+	<string>0.4.82</string>
 	<key>CFBundleVersion</key>
-	<string>0.4.81</string>
+	<string>0.4.82</string>
 	<key>NSPrincipalClass</key>
 	<string>QingSplitPrefsRootListController</string>
 	<key>CFBundleIconFiles</key>
 	<array>
 		<string>icon.png</string>
 		<string>icon@2x.png</string>
+		<string>icon@3x.png</string>
 	</array>
 </dict>
 </plist>

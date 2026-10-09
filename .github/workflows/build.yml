@@ -430,6 +430,13 @@ jobs:
                       qs_log(@"BUNDLE_PATH_FAIL dyld-derived\n");
                   }
               }
+              if (sp && [(id)sp count] > 0) {
+                  // v0.4.82: LOAD2 成功路径同样追加"目标应用"父分组 + 全部 target 开关（保证收纳生效）
+                  NSMutableArray *arr2 = [NSMutableArray arrayWithArray:sp];
+                  Class PS2 = NSClassFromString(@"PSSpecifier");
+                  qs_add_target_switches(arr2, PS2, self);
+                  sp = arr2;
+              }
               if (!sp || (id)sp == (id)@[] || [(id)sp count] == 0) {
                   // 兜底：手动解析 Root.plist
                   NSString *plistPath = nil;
@@ -589,5 +596,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.81_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.82_iphoneos-arm64e.deb
           if-no-files-found: warn

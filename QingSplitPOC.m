@@ -2147,8 +2147,9 @@ static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat
     CGFloat R = MIN(110.0, (880.0 - cyS) / 0.94);
     R = MIN(R, cx - 16.0);
     if (rings > 1) {
-        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 62.0 * (CGFloat)(rings - 1),
-                           cx - 16.0 - 62.0 * (CGFloat)(rings - 1));
+        // v0.4.82: 径向间隔 62→48，内中外圈更紧凑
+        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 48.0 * (CGFloat)(rings - 1),
+                           cx - 16.0 - 48.0 * (CGFloat)(rings - 1));
         if (R > Rmax) R = Rmax;
     }
     if (cxOut) *cxOut = cx;
@@ -2223,8 +2224,9 @@ static void poc_picker_show(void) {
             NSUInteger j = i - cum;
             NSUInteger ringTotal = MIN(ringCap[ring], n - cum);
             double theta = M_PI;                            // 180°（单点）
-            if (ringTotal > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(ringTotal - 1);
-            CGFloat rr = R + (CGFloat)ring * 62.0;
+            // v0.4.82: 每圈统一跨度 150°（105°..255°），step 按圈内数量均分；径向间隔 48
+            if (ringTotal > 1) theta = 105.0 * M_PI / 180.0 + (double)j * (150.0 * M_PI / 180.0) / (double)(ringTotal - 1);
+            CGFloat rr = R + (CGFloat)ring * 48.0;
             CGFloat ix = pw + rr * cos(theta);              // 面板内 x（圆心面板内 (pw, cyP)）
             CGFloat iy = cyP - rr * sin(theta);             // 面板内 y
             NSDictionary *app = apps[i];
@@ -2283,8 +2285,8 @@ static void poc_picker_show(void) {
             NSUInteger pj = pi - pcum;
             NSUInteger pcnt = MIN(ringCap[pring], n - pcum);
             double pth = M_PI;
-            if (pcnt > 1) pth = 110.0 * M_PI / 180.0 + (double)pj * (140.0 * M_PI / 180.0) / (double)(pcnt - 1);
-            double prr = R + (double)pring * 62.0;
+            if (pcnt > 1) pth = 105.0 * M_PI / 180.0 + (double)pj * (150.0 * M_PI / 180.0) / (double)(pcnt - 1);
+            double prr = R + (double)pring * 48.0;
             poc_log(@"PICKER_ICON i=%ld ring=%ld th=%.0f rr=%.0f c=(%.0f,%.0f)",
                     (long)pi, (long)pring, pth * 180.0 / M_PI, prr,
                     gx + prr * cos(pth), gy - prr * sin(pth));
@@ -2515,8 +2517,8 @@ static void poc_setup_edge_trigger(void) {
                 NSUInteger j = i - cum;
                 NSUInteger cnt = MIN(ringCap[ring], n - cum);
                 double theta = M_PI;
-                if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
-                double rr = R + (double)ring * 62.0;
+                if (cnt > 1) theta = 105.0 * M_PI / 180.0 + (double)j * (150.0 * M_PI / 180.0) / (double)(cnt - 1);
+                double rr = R + (double)ring * 48.0;
                 // v0.4.78: 角度差归一化修正 —— 原实现 |ang-θ|∈(π,2π) 时 2π-dAng 变负（下半屏图标 θ>180° 受影响，选中失效）
                 double dAng = fabs(ang - theta);
                 dAng = fmod(dAng, 2.0 * M_PI);
@@ -2579,8 +2581,8 @@ static void poc_setup_edge_trigger(void) {
                 NSUInteger j = i - cum;
                 NSUInteger cnt = MIN(ringCap[ring], n - cum);
                 double theta = M_PI;
-                if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
-                double rr = R + (double)ring * 62.0;
+                if (cnt > 1) theta = 105.0 * M_PI / 180.0 + (double)j * (150.0 * M_PI / 180.0) / (double)(cnt - 1);
+                double rr = R + (double)ring * 48.0;
                 // v0.4.78: 角度差归一化修正（同 Changed）
                 double dAng = fabs(ang - theta);
                 dAng = fmod(dAng, 2.0 * M_PI);
@@ -2620,7 +2622,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.81 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.82 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
