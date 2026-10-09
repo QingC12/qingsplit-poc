@@ -146,16 +146,36 @@ jobs:
               CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, CFSTR("com.qingsplit.poc"));
               CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
               qs_log(@"CF_WRITE key=%@ val=%@\n", key, value);
-              // v0.4.67: 文件双写（Preferences 沙盒内真实路径可写）—— SpringBoard 文件读取路径必命中
+              // v0.4.69: 文件双写 —— 读不到文件内容时绝不覆盖（保留 CF_WRITE 与已有 target_*）
               @try {
                   NSString *path = qs_cfg_path();
                   NSMutableDictionary *pd = [NSMutableDictionary dictionaryWithContentsOfFile:path];
-                  if (!pd) pd = [NSMutableDictionary dictionary];
-                  pd[key] = value;
-                  if ([pd writeToFile:path atomically:YES]) {
-                      qs_log(@"FILE_WRITE key=%@ val=%@\n", key, value);
+                  if (pd) {
+                      pd[key] = value;
+                      if ([pd writeToFile:path atomically:YES]) {
+                          qs_log(@"FILE_WRITE key=%@ val=%@\n", key, value);
+                      } else {
+                          qs_log(@"FILE_WRITE_FAIL key=%@\n", key);
+                      }
                   } else {
-                      qs_log(@"FILE_WRITE_FAIL key=%@\n", key);
+                      qs_log(@"FILE_WRITE_SKIP unreadable key=%@\n", key);
+                  }
+                  // v0.4.69: 写 target_* 时同步聚合 targets 字符串（SpringBoard 单 key 读取兜底）
+                  if ([key hasPrefix:@"target_"]) {
+                      NSMutableArray *on = [NSMutableArray array];
+                      NSMutableDictionary *all = [NSMutableDictionary dictionaryWithContentsOfFile:path];
+                      if (all) {
+                          for (NSString *k in all) {
+                              if ([k hasPrefix:@"target_"] && [all[k] boolValue]) {
+                                  [on addObject:[k substringFromIndex:7]];
+                              }
+                          }
+                      }
+                      if ([value boolValue]) [on addObject:[key substringFromIndex:7]];
+                      NSString *joined = [on componentsJoinedByString:@","];
+                      CFPreferencesSetAppValue(CFSTR("targets"), (__bridge CFPropertyListRef)joined, CFSTR("com.qingsplit.poc"));
+                      CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
+                      qs_log(@"TARGETS_AGG %@\n", joined);
                   }
               } @catch (NSException *e) { qs_log(@"FILE_WRITE_EXC %@\n", e.name); }
           }
@@ -494,18 +514,22 @@ jobs:
                   }
                   CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
                   qs_log(@"CFG_DEFAULT_WRITTEN\n");
-                  // v0.4.67: 默认值同时落盘文件，SpringBoard 直接文件读取
+                  // v0.4.69: 默认文件只在【不存在】时初始化；存在则绝不覆盖（防止 target_* 丢失）
                   @try {
                       NSString *path = qs_cfg_path();
-                      NSMutableDictionary *pd = [NSMutableDictionary dictionaryWithContentsOfFile:path];
-                      if (!pd) pd = [NSMutableDictionary dictionary];
-                      for (NSString *k in def) {
-                          if (!pd[k]) pd[k] = def[k];
-                      }
-                      if ([pd writeToFile:path atomically:YES]) {
-                          qs_log(@"FILE_DEFAULT_WRITTEN keys=%lu\n", (unsigned long)[pd count]);
+                      NSFileManager *fm = [NSFileManager defaultManager];
+                      if (![fm fileExistsAtPath:path]) {
+                          NSMutableDictionary *pd = [NSMutableDictionary dictionary];
+                          for (NSString *k in def) {
+                              if (!pd[k]) pd[k] = def[k];
+                          }
+                          if ([pd writeToFile:path atomically:YES]) {
+                              qs_log(@"FILE_DEFAULT_INIT keys=%lu\n", (unsigned long)[pd count]);
+                          } else {
+                              qs_log(@"FILE_DEFAULT_FAIL\n");
+                          }
                       } else {
-                          qs_log(@"FILE_DEFAULT_FAIL\n");
+                          qs_log(@"FILE_DEFAULT_SKIP exists\n");
                       }
                   } @catch (NSException *e) { qs_log(@"FILE_DEFAULT_EXC %@\n", e.name); }
               }
@@ -557,5 +581,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.68_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.69_iphoneos-arm64e.deb
           if-no-files-found: warn
