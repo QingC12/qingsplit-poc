@@ -2096,6 +2096,20 @@ static UIImage *poc_picker_icon(NSString *bid) {
 }
 
 static void poc_picker_select(NSDictionary *app) {
+    // v0.4.79: 选中反馈动画 —— 对应图标放大淡出（0.16s），浮窗打开与之衔接
+    @try {
+        NSUInteger si = [g_pickerApps indexOfObject:app];
+        if (si != NSNotFound) {
+            UIView *selB = [g_pickerPanel viewWithTag:600 + (NSInteger)si];
+            if (selB) {
+                [UIView animateWithDuration:0.16 delay:0 usingSpringWithDamping:0.6 initialSpringVelocity:0.5
+                                    options:UIViewAnimationOptionCurveEaseOut animations:^{
+                    selB.transform = CGAffineTransformMakeScale(1.35, 1.35);
+                    selB.alpha = 0;
+                } completion:nil];
+            }
+        }
+    } @catch (NSException *e) { }
     NSString *sid = app[@"sid"];
     g_manualSid = [sid copy];
     g_triggerArmed = YES;
@@ -2134,13 +2148,15 @@ static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat
     CGFloat W = scr.size.width, H = scr.size.height;
     CGFloat pw = 200.0;
     CGFloat cx = W - 24.0;                  // 圆心屏内 x（右缘偏左，图标向左展开）
-    // v0.4.76: 选择器缩小(R≤118)并整体下移(单圈700/两圈640, 约屏高4~5%)；最低图标 y ≤ 880（932 屏避开底部手势区）
-    CGFloat cyS = (n > 8) ? MIN(H - 150.0, 640.0) : MIN(H - 150.0, 700.0);
-    CGFloat R = MIN(118.0, (880.0 - cyS) / 0.94);      // 约束：最低图标 y ≤ 880
-    R = MIN(R, cx - 16.0);                  // 约束：最左图标 x ≥ 16
-    if (n > 8) {
-        // 外圈半径 = R + 62 → 反推内圈 R 上限
-        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 62.0, cx - 16.0 - 62.0);
+    // v0.4.79: 每圈固定 6 个图标，按数量 1~3 圈；cyS/R 随圈数（最低图标 y ≤ 880）
+    NSUInteger rings = (n + 5) / 6;
+    CGFloat cyS = (rings >= 3) ? MIN(H - 150.0, 640.0)
+               : ((rings == 2) ? MIN(H - 150.0, 660.0) : MIN(H - 150.0, 700.0));
+    CGFloat R = MIN(110.0, (880.0 - cyS) / 0.94);
+    R = MIN(R, cx - 16.0);
+    if (rings > 1) {
+        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 62.0 * (CGFloat)(rings - 1),
+                           cx - 16.0 - 62.0 * (CGFloat)(rings - 1));
         if (R > Rmax) R = Rmax;
     }
     if (cxOut) *cxOut = cx;
@@ -2164,7 +2180,7 @@ static void poc_picker_show(void) {
         // 圆心固定在右缘 (430, 155)，半径 140，图标沿 θ 110°→250°（正左 180°）均匀排布，最多 8 个
         UIView *panel = g_pickerPanel;
         NSArray *allApps = poc_all_apps();                 // v0.4.24: 运行中 + 全部已安装
-        NSArray *apps = (allApps.count > 16) ? [allApps subarrayWithRange:NSMakeRange(0, 16)] : allApps;   // v0.4.74: 内外两圈最多 16
+        NSArray *apps = (allApps.count > 18) ? [allApps subarrayWithRange:NSMakeRange(0, 18)] : allApps;   // v0.4.79: 每圈 6 个，最多 3 圈 18
         NSUInteger n = apps.count ? apps.count : 1;
         CGFloat gx, gy, gR, gPX, gPY;
         poc_picker_geo(n, &gx, &gy, &gR, &gPX, &gPY);      // v0.4.73: 动态几何
@@ -2205,13 +2221,14 @@ static void poc_picker_show(void) {
         if (!g_pickerImpFB) g_pickerImpFB = [[UIImpactFeedbackGenerator alloc] init];
         g_pickerApps = apps;
         for (NSUInteger i = 0; i < n; i++) {
-            // v0.4.74: 内外两圈 —— 内圈前 8 个 (R)，外圈其余 (R+62)；θ 各圈内部 110°..250° 均分
-            NSUInteger ring = (i < 8) ? 0 : 1;
-            NSUInteger j = (i < 8) ? i : (i - 8);
-            NSUInteger cnt = (i < 8) ? ((n > 8) ? 8 : n) : (n - 8);
+            // v0.4.79: 每圈 6 个 —— ring = i/6，j = i%6，圈半径 R + ring*62；θ 各圈 110°..250° 均分
+            NSUInteger perRing = 6;
+            NSUInteger ring = i / perRing;
+            NSUInteger j = i % perRing;
+            NSUInteger ringTotal = MIN(perRing, n - ring * perRing);
             double theta = M_PI;                            // 180°（单点）
-            if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
-            CGFloat rr = (ring == 0) ? R : (R + 62.0);
+            if (ringTotal > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(ringTotal - 1);
+            CGFloat rr = R + (CGFloat)ring * 62.0;
             CGFloat ix = pw + rr * cos(theta);              // 面板内 x（圆心面板内 (pw, cyP)）
             CGFloat iy = cyP - rr * sin(theta);             // 面板内 y
             NSDictionary *app = apps[i];
@@ -2240,7 +2257,16 @@ static void poc_picker_show(void) {
             lb.userInteractionEnabled = NO;
             [b addSubview:lb];
             [b addTarget:[POCBootstrap class] action:@selector(poc_picker_cell_tapped:) forControlEvents:UIControlEventTouchUpInside];
+            // v0.4.79: 逐个弹性弹入（Stheno 式 staggered spring —— 从圆心方向放大进入）
+            b.transform = CGAffineTransformMakeScale(0.5, 0.5);
+            b.alpha = 0;
             [panel addSubview:b];
+            [UIView animateWithDuration:0.30 delay:(double)i * 0.025
+                          usingSpringWithDamping:0.72 initialSpringVelocity:0.6
+                                        options:UIViewAnimationOptionCurveEaseOut animations:^{
+                b.transform = CGAffineTransformIdentity;
+                b.alpha = 1;
+            } completion:nil];
         }
         // 滑入动画（spring，Stheno 风格）
         panel.frame = CGRectMake(430, panelY, pw, pH);
@@ -2252,12 +2278,13 @@ static void poc_picker_show(void) {
         poc_log(@"PICKER_SHOW apps=%ld arcL=1 R=%.0f", (long)apps.count, R);
         // v0.4.77: 探针 —— 几何 + 每个图标的屏内中心（供命中比对）
         for (NSUInteger pi = 0; pi < n; pi++) {
-            NSUInteger pring = (pi < 8) ? 0 : 1;
-            NSUInteger pj = (pi < 8) ? pi : (pi - 8);
-            NSUInteger pcnt = (pi < 8) ? ((n > 8) ? 8 : n) : (n - 8);
+            NSUInteger perRing = 6;
+            NSUInteger pring = pi / perRing;
+            NSUInteger pj = pi % perRing;
+            NSUInteger pcnt = MIN(perRing, n - pring * perRing);
             double pth = M_PI;
             if (pcnt > 1) pth = 110.0 * M_PI / 180.0 + (double)pj * (140.0 * M_PI / 180.0) / (double)(pcnt - 1);
-            double prr = (pring == 0) ? R : (R + 62.0);
+            double prr = R + (double)pring * 62.0;
             poc_log(@"PICKER_ICON i=%ld ring=%ld th=%.0f rr=%.0f c=(%.0f,%.0f)",
                     (long)pi, (long)pring, pth * 180.0 / M_PI, prr,
                     gx + prr * cos(pth), gy - prr * sin(pth));
@@ -2478,13 +2505,14 @@ static void poc_setup_edge_trigger(void) {
             NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
             double best = 1e9;
-            for (NSUInteger i = 0; i < n; i++) {   // v0.4.74: 内外两圈命中
-                NSUInteger ring = (i < 8) ? 0 : 1;
-                NSUInteger j = (i < 8) ? i : (i - 8);
-                NSUInteger cnt = (i < 8) ? ((n > 8) ? 8 : n) : (n - 8);
+            for (NSUInteger i = 0; i < n; i++) {   // v0.4.79: 每圈 6 个命中
+                NSUInteger perRing = 6;
+                NSUInteger ring = i / perRing;
+                NSUInteger j = i % perRing;
+                NSUInteger cnt = MIN(perRing, n - ring * perRing);
                 double theta = M_PI;
                 if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
-                double rr = (ring == 0) ? R : (R + 62.0);
+                double rr = R + (double)ring * 62.0;
                 // v0.4.78: 角度差归一化修正 —— 原实现 |ang-θ|∈(π,2π) 时 2π-dAng 变负（下半屏图标 θ>180° 受影响，选中失效）
                 double dAng = fabs(ang - theta);
                 dAng = fmod(dAng, 2.0 * M_PI);
@@ -2506,9 +2534,17 @@ static void poc_setup_edge_trigger(void) {
                 NSInteger i = sv.tag - 600;
                 if (i < 0 || i >= (NSInteger)n) continue;
                 BOOL hl = (i == idx);
-                sv.backgroundColor = hl ? [UIColor colorWithWhite:1.0 alpha:0.20] : [UIColor clearColor];
-                sv.layer.cornerRadius = hl ? 14 : 0;
-                if (hl && g_pickerSelFB) [g_pickerSelFB selectionChanged];   // 触觉反馈（Myrtle 特征）
+                BOOL wasHl = !CGAffineTransformIsIdentity(sv.transform);   // 弹入完成后 identity；放大中视为高亮
+                if (hl != wasHl) {
+                    // v0.4.79: 高亮/取消弹性动画（0.12s，放大 + 背景淡入）
+                    [UIView animateWithDuration:0.12 delay:0
+                                  usingSpringWithDamping:0.7 initialSpringVelocity:0.4
+                                                options:UIViewAnimationOptionCurveEaseOut animations:^{
+                        sv.transform = hl ? CGAffineTransformMakeScale(1.12, 1.12) : CGAffineTransformIdentity;
+                        sv.backgroundColor = hl ? [UIColor colorWithWhite:1.0 alpha:0.22] : [UIColor clearColor];
+                    } completion:nil];
+                    if (hl && g_pickerSelFB) [g_pickerSelFB selectionChanged];   // 触觉反馈（Myrtle 特征）
+                }
             }
         }
     }
@@ -2529,13 +2565,14 @@ static void poc_setup_edge_trigger(void) {
             NSUInteger n = g_pickerApps.count;
             NSInteger idx = -1;
             double best = 1e9;
-            for (NSUInteger i = 0; i < n; i++) {   // v0.4.74: 内外两圈命中
-                NSUInteger ring = (i < 8) ? 0 : 1;
-                NSUInteger j = (i < 8) ? i : (i - 8);
-                NSUInteger cnt = (i < 8) ? ((n > 8) ? 8 : n) : (n - 8);
+            for (NSUInteger i = 0; i < n; i++) {   // v0.4.79: 每圈 6 个命中
+                NSUInteger perRing = 6;
+                NSUInteger ring = i / perRing;
+                NSUInteger j = i % perRing;
+                NSUInteger cnt = MIN(perRing, n - ring * perRing);
                 double theta = M_PI;
                 if (cnt > 1) theta = 110.0 * M_PI / 180.0 + (double)j * (140.0 * M_PI / 180.0) / (double)(cnt - 1);
-                double rr = (ring == 0) ? R : (R + 62.0);
+                double rr = R + (double)ring * 62.0;
                 // v0.4.78: 角度差归一化修正（同 Changed）
                 double dAng = fabs(ang - theta);
                 dAng = fmod(dAng, 2.0 * M_PI);
@@ -2575,7 +2612,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.78 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.79 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
