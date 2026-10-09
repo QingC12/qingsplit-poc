@@ -2134,12 +2134,13 @@ static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat
     CGFloat W = scr.size.width, H = scr.size.height;
     CGFloat pw = 200.0;
     CGFloat cx = W - 24.0;                  // 圆心屏内 x（右缘偏左，图标向左展开）
-    CGFloat cyS = (n > 8) ? MIN(H - 150.0, 645.0) : MIN(H - 150.0, 720.0);
-    CGFloat R = MIN(140.0, (H - cyS - 36.0) / 0.94);   // 约束：最低图标 y ≤ H-36
+    // v0.4.75: 圆心再上移，最低图标 y ≤ 780（避开屏幕底部系统手势区 y>790）
+    CGFloat cyS = (n > 8) ? MIN(H - 150.0, 600.0) : MIN(H - 150.0, 660.0);
+    CGFloat R = MIN(140.0, (780.0 - cyS) / 0.94);      // 约束：最低图标 y ≤ 780
     R = MIN(R, cx - 16.0);                  // 约束：最左图标 x ≥ 16
     if (n > 8) {
         // 外圈半径 = R + 62 → 反推内圈 R 上限
-        CGFloat Rmax = MIN((H - cyS - 36.0) / 0.94 - 62.0, cx - 16.0 - 62.0);
+        CGFloat Rmax = MIN((780.0 - cyS) / 0.94 - 62.0, cx - 16.0 - 62.0);
         if (R > Rmax) R = Rmax;
     }
     if (cxOut) *cxOut = cx;
@@ -2167,7 +2168,11 @@ static void poc_picker_show(void) {
         NSUInteger n = apps.count ? apps.count : 1;
         CGFloat gx, gy, gR, gPX, gPY;
         poc_picker_geo(n, &gx, &gy, &gR, &gPX, &gPY);      // v0.4.73: 动态几何
-        const CGFloat pw = 200, pH = 310;
+        const CGFloat pw = 200;
+        const CGFloat pH = ceil(155.0 + 0.94 * (gR + (n > 8 ? 62.0 : 0.0)) + 44.0);   // v0.4.75: 面板高度容纳外圈最下端，外圈图标可点按
+        // v0.4.75: 手势指引图标随圆心对齐（红线指示 → 小指引）
+        UIView *qind = [g_pickerVC.view viewWithTag:781];
+        if (qind) qind.center = CGPointMake(gx, gy);
         const CGFloat panelX = gPX, panelY = gPY;
         if (!panel) {
             panel = [[UIView alloc] initWithFrame:CGRectMake(panelX, panelY, pw, pH)];
@@ -2271,12 +2276,29 @@ static void poc_setup_edge_trigger(void) {
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
-        // v0.4.40: 右缘触发条（14px 宽 × 200 高，屏幕右下贴底）—— Arc 菜单触发起点
-        // v0.4.20 原始 20×150 y=391；v0.4.36 加宽加高；v0.4.39 下方 30%；v0.4.40 再缩短贴右下
-        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(430 - 14, 932 - 200, 14, 200)];
+        // v0.4.75: 右缘触发区 —— 透明，占屏幕右侧 5% 竖条（全高），不干扰主屏视觉
+        CGRect sb = [[UIScreen mainScreen] bounds];
+        UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(sb.size.width * 0.95, 0, sb.size.width * 0.05, sb.size.height)];
         strip.tag = 778;   // v0.4.28: backdrop 需要定位并提到最上
-        strip.userInteractionEnabled = YES;   // 该区域无系统内容（右侧中段），独占右缘手势
-        strip.backgroundColor = [UIColor colorWithRed:1.0 green:0.28 blue:0.28 alpha:0.28];   // 触发区提示（红线）
+        strip.userInteractionEnabled = YES;
+        strip.backgroundColor = [UIColor clearColor];   // 透明触发区（视觉指引改由 781 提供）
+        // v0.4.75: 手势指引图标 —— 小圆角竖条，中心与选择器圆心对齐（show 时更新）
+        CGFloat igx, igy; poc_picker_geo(1, &igx, &igy, NULL, NULL, NULL);
+        UIView *qind = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 26, 46)];
+        qind.center = CGPointMake(igx, igy);
+        qind.tag = 781;
+        qind.userInteractionEnabled = NO;
+        qind.backgroundColor = [UIColor colorWithRed:1.0 green:0.28 blue:0.28 alpha:0.35];
+        qind.layer.cornerRadius = 8;
+        UILabel *qar = [[UILabel alloc] initWithFrame:qind.bounds];
+        qar.text = @"‹";
+        qar.textColor = [UIColor whiteColor];
+        qar.font = [UIFont boldSystemFontOfSize:20];
+        qar.textAlignment = NSTextAlignmentCenter;
+        qar.userInteractionEnabled = NO;
+        [qind addSubview:qar];
+        [vc.view addSubview:qind];
+        [vc.view bringSubviewToFront:strip];
         UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc]
                                        initWithTarget:[POCBootstrap class]
                                        action:@selector(poc_edge_panned:)];
@@ -2528,7 +2550,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.74 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.75 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
