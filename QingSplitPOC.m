@@ -1647,6 +1647,7 @@ static const void *kWinSidOwner = &kWinSidOwner;  // container → 所属 sid
 static const void *kWinAdopted = &kWinAdopted;  // v0.6.3: 本窗已完成 presenter 呈现接管（防重复）
 static const void *kWinAdoptedFrom = &kWinAdoptedFrom;  // v0.6.5: ADOPT 原 superview（关闭时放回，防 SB 呈现缺失→卡屏）
 static const void *kWinAdoptedIdx = &kWinAdoptedIdx;    // v0.6.5: ADOPT 原 index
+static const void *kWinScene = &kWinScene;    // v0.6.9: 目标 FBScene（UNADOPT 后激活恢复全屏呈现）
 static void win_set(UIWindow *w, const void *key, id val) {
     if (w) objc_setAssociatedObject(w, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -2261,6 +2262,27 @@ static void poc_unadopt_window(UIWindow *w) {
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
             // v0.6.8: 放回后重新激活 presenter —— 系统恢复呈现布局为全屏（核心修复）
             poc_reactivate_presenter(pv);
+            // v0.6.9: 延迟激活 scene 到前台 —— 系统重建全屏呈现（presenter 激活无效时的可靠路径）
+            id scene = win_get(w, kWinScene);
+            if (scene) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    @try {
+                        SEL sel = sel_registerName("activateWithTransitionContext:");
+                        if ([scene respondsToSelector:sel]) {
+                            id ctx = nil;
+                            Class c = NSClassFromString(@"FBSSceneTransitionContext");
+                            if (c) ctx = [[c alloc] init];
+                            void (*fn)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+                            fn(scene, sel, ctx);
+                            poc_log(@"UNADOPT_SCENE_ACTIVATE called ctxCls=%@", ctx ? NSStringFromClass(c) : @"nil");
+                        } else {
+                            poc_log(@"UNADOPT_SCENE_NOAPI");
+                        }
+                    } @catch (NSException *e) {
+                        poc_log(@"UNADOPT_SCENE_ACT_EXC %@", e.name);
+                    }
+                });
+            }
         }
         win_set(w, kWinAdopted, nil);
         win_set(w, kWinAdoptedFrom, nil);
@@ -2333,6 +2355,7 @@ static void poc_close_window(UIWindow *w) {
         win_set(w, kWinContainer, nil); win_set(w, kWinHostView, nil);
         win_set(w, kWinSid, nil); win_set(w, kWinCtx, nil);
         win_set(w, kWinDiag, nil); win_set(w, kWinSB, nil);
+        win_set(w, kWinScene, nil);   // v0.6.9
         // 活跃引用指向剩余最后一个窗口
         UIWindow *last = g_wins.lastObject;
         if (last) {
@@ -2979,6 +3002,7 @@ static void poc_try_float(void) {
         win_set(g_win, kWinContainer, container);
         win_set(g_win, kWinHostView, hv);
         win_set(g_win, kWinDiag, g_diag);
+        win_set(g_win, kWinScene, scene);   // v0.6.9: 存目标 scene（UNADOPT 激活用）
         poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=DARK native=%@ src=%@",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
