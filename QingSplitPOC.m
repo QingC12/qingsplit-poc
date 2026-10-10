@@ -941,6 +941,11 @@ static int s_tapSeq = 0;         // 双击序列
 static NSTimeInterval s_tapT0 = 0;
 - (void)pocHandleTouchBegan:(UITouch *)t point:(CGPoint)p {
     if (s_mTouch == t) return;   // 双路去重（系统派发 + 窗口手动派发）
+    // v0.5.13: 关闭按钮优先 —— 触摸在关闭按钮上 → 不手动处理（mode=0），系统派发会把触摸交给按钮
+    if (_closeBtn && !_closeBtn.hidden && CGRectContainsPoint(_closeBtn.frame, p)) {
+        s_mTouch = t; s_mMode = 0; s_mStart = p; s_mFrame = self.frame; s_mT0 = CACurrentMediaTime();
+        return;
+    }
     s_mTouch = t;
     s_mStart = p;
     s_mFrame = self.frame;
@@ -966,19 +971,26 @@ static NSTimeInterval s_tapT0 = 0;
         f.origin.x = MAX(minX, MIN(f.origin.x, maxX));
         f.origin.y = MAX(minY, MIN(f.origin.y, maxY));
         self.frame = f;
-    } else {   // 角落缩放（对边锚定，最小 120×160）
+        [self layoutIfNeeded];   // v0.5.13: 拖动中同步内容布局，减少远程 layer 残影
+    } else {   // 角落缩放（v0.5.13: 等比例 —— 宽高比锁定起始比例，内容不拉伸变形；最小 120×160）
+        CGFloat aspect = s_mFrame.size.height / s_mFrame.size.width;
         CGFloat dx = p.x - s_mStart.x, dy = p.y - s_mStart.y;
         CGRect f = s_mFrame;
-        if (s_mMode == 2) {   // 左下角：左上角锚定，右下角随动
-            f.size.width  = MAX(120, s_mFrame.size.width + dx);
-            f.size.height = MAX(160, s_mFrame.size.height + dy);
-            f.origin.y = s_mFrame.origin.y;
-        } else {              // 右下角：右上角锚定，左下角随动
-            f.size.width  = MAX(120, s_mFrame.size.width + dx);
-            f.size.height = MAX(160, s_mFrame.size.height + dy);
-            f.origin.x = s_mFrame.origin.x;
+        if (s_mMode == 2) {   // 左下角：顶部锚定，左/底随动
+            CGFloat nw = MAX(120, s_mFrame.size.width + dx);
+            CGFloat nh = nw * aspect;
+            if (nh < 160) { nh = 160; nw = nh / aspect; }
+            f.size.width = nw; f.size.height = nh;
+            f.origin.y = s_mFrame.origin.y;   // 顶部锚定
+        } else {              // 右下角：左侧锚定，右/底随动
+            CGFloat nw = MAX(120, s_mFrame.size.width + dx);
+            CGFloat nh = nw * aspect;
+            if (nh < 160) { nh = 160; nw = nh / aspect; }
+            f.size.width = nw; f.size.height = nh;
+            f.origin.x = s_mFrame.origin.x;   // 左侧锚定
         }
         self.frame = f;
+        [self layoutIfNeeded];   // v0.5.13: 同步内容布局，减少远程 layer 残影
     }
     static NSTimeInterval lastM = 0;
     NSTimeInterval nowM = [[NSProcessInfo processInfo] systemUptime];
@@ -1374,7 +1386,8 @@ static BOOL poc_touch_in_float_container(id gr) {
         CGPoint gp = [gr locationInView:nil];   // nil → window/屏幕坐标
         for (UIWindow *w in [g_wins copy]) {
             QSFloatContainer *c = (QSFloatContainer *)win_get(w, kWinContainer);
-            if (!c || !c.window) continue;
+            // v0.5.13: 防御 —— 窗口已关闭/隐藏的容器不参与拦截（关闭后旧 frame 区域不得再劫持触摸）
+            if (!c || !c.window || c.window.hidden) continue;
             CGPoint cp = [c convertPoint:gp fromView:nil];
             if (CGRectContainsPoint(c.bounds, cp)) return YES;
         }
@@ -1529,14 +1542,14 @@ static void poc_neutralize_sb_gestures(void) {
             poc_collect_gestures(w, found, 0);
         }
         poc_log(@"SBGEST_FOUND %lu", (unsigned long)found.count);
-        // ③ 中和：全部取消触摸抢占；switcher 类手势额外换 delegate 包装（浮窗容器内 shouldBegin=NO）
+        // ③ 中和：switcher 类手势换 delegate 包装（浮窗容器内 shouldBegin=NO）。
+        //    v0.5.13: 移除 cancelsTouchesInView=NO —— v0.5.12 实测该设置永久破坏 SB 全部手势
+        //    （手机所有手势失效 + 锁屏上滑解锁被废）；触摸已由 qs_appSend 手动转发进入浮窗，
+        //    不再需要取消 SB 手势的触摸抢占。
         static NSMutableArray *g_sbDels = nil;   // delegate 包装强持有（delegate 是 weak）
         if (!g_sbDels) g_sbDels = [NSMutableArray array];
         for (UIGestureRecognizer *gr in found) {
             @try {
-                gr.cancelsTouchesInView = NO;
-                gr.delaysTouchesBegan = NO;
-                gr.delaysTouchesEnded = NO;
                 NSString *cn = NSStringFromClass([gr class]);
                 if ([cn containsString:@"Switcher"] || [cn containsString:@"Fluid"]
                     || [cn containsString:@"Home"] || [cn containsString:@"ClickAndDrag"]
@@ -3434,7 +3447,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.12 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.13 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
