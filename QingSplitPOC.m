@@ -35,6 +35,7 @@
 #import <unistd.h>
 #import <sys/stat.h>
 #import <math.h>   // v0.4.36: Arc 菜单三角函数（cos/sin/atan2/fabs/hypot/M_PI）
+#import <notify.h>  // v0.5.3: 锁屏广播兜底（com.apple.springboard.lockstate）
 
 // ----------------------------------------------------------------------------
 // 日志
@@ -278,20 +279,26 @@ static NSDictionary *poc_pick_target(NSString *wanted) {
     }
     NSArray *scenes = poc_all_scenes();
     id fallback = nil; NSString *fallbackSid = nil;
+    BOOL wantedMatched = NO;
     for (id sc in scenes) {
         NSString *sid = poc_scene_id(sc);
         if (!poc_is_target_scene(sid, nil)) continue;
-        if (!fallback) { fallback = sc; fallbackSid = sid; }
         if (wantedList.count) {
             for (NSString *w in wantedList) {
                 if (poc_is_target_scene(sid, w)) {   // v0.4.24: 归一化匹配（兼容纯 bundle id）
                     fallback = sc; fallbackSid = sid;
+                    wantedMatched = YES;
                     break;
                 }
             }
             if ([fallbackSid isEqualToString:sid]) break;
+        } else {
+            if (!fallback) { fallback = sc; fallbackSid = sid; }
         }
     }
+    // v0.5.3: 用户点名 wanted（选择器/启动中）但 scene 尚未出现 → 返回 nil 等待，
+    // 绝不 fallback 到前台其它 app（否则会建错 app 的浮窗 → 同 scene 双 host → 手势/主屏卡死）
+    if (wantedList.count && !wantedMatched) return nil;
     if (!fallback) return nil;
     // layer 提取（轨道 A，对齐探针已验证路径 v0.1.6 P3 段）：
     //   layerManager → layers（多 key 兜底，layers 可能是 NSSet/NSOrderedSet）
@@ -1750,6 +1757,23 @@ static void poc_try_float(void) {
         wanted = [fileWanted stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     }
     NSDictionary *target = poc_pick_target(wanted);
+    if (target) {
+        // v0.5.3: 建窗前统一去重 —— 覆盖 picker_select / sceneActivation / fallback 等所有入口
+        NSString *tsid = target[@"sid"];
+        if (tsid && g_wins.count) {
+            BOOL dup = NO;
+            for (UIWindow *w in [g_wins copy]) {
+                NSString *wsid = win_get(w, kWinSid);
+                if (wsid && [wsid isEqualToString:tsid]) { dup = YES; break; }
+            }
+            if (dup) {
+                poc_log(@"TRIGGER_DUP sid=%@ — skip build, focus existing", tsid);
+                g_launchPending = NO;
+                g_manualSid = nil;
+                return;
+            }
+        }
+    }
     if (!target) {
         if (g_launchPending) {
             // v0.4.24: 启动中的应用 scene 尚未出现 → 持续轮询（3s 节流日志，15s 超时放弃）
@@ -2586,7 +2610,19 @@ static void poc_setup_edge_trigger(void) {
                                                  selector:@selector(poc_app_inactive:)
                                                      name:UIApplicationDidEnterBackgroundNotification
                                                    object:nil];
-        poc_log(@"SAFETY_NET armed resign+background");
+        // v0.5.3: 锁屏广播（SpringBoard lockstate=1，比 app 生命周期更可靠）→ 关闭所有浮窗
+        static int g_lockNotify = 0;
+        uint32_t nst = notify_register_dispatch("com.apple.springboard.lockstate", &g_lockNotify,
+                                                dispatch_get_main_queue(), ^(int token) {
+            uint64_t st = 0;
+            notify_get_state(token, &st);
+            if (st == 1 && g_wins.count) {
+                poc_log(@"LOCKSTATE_LOCKED state=%llu wins=%lu → close all",
+                        (unsigned long long)st, (unsigned long)g_wins.count);
+                poc_close_all_windows();
+            }
+        });
+        poc_log(@"SAFETY_NET armed resign+background+lockstate rc=%u", nst);
     } @catch (NSException *e) {
         poc_log(@"SAFETY_NET_EXC %@", e.name);
     }
@@ -2868,7 +2904,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.2 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.3 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
