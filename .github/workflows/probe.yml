@@ -13,117 +13,23 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install ldid
-        run: |
-          brew install ldid make
+        run: brew install ldid make
 
       - name: Compile SwitcherProbe arm64e dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           export SDKROOT="$SDK"
-          xcrun --sdk iphoneos clang \
-            -arch arm64e \
-            -isysroot "$SDK" \
-            -fobjc-arc \
-            -miphoneos-version-min=15.0 \
-            -fmodules \
-            -c SwitcherProbe.m \
-            -o SwitcherProbe.o
-          xcrun --sdk iphoneos clang \
-            -arch arm64e \
-            -isysroot "$SDK" \
-            -miphoneos-version-min=15.0 \
-            -dynamiclib \
-            -Xlinker -fixup_chains \
-            -install_name "/Library/MobileSubstrate/DynamicLibraries/SwitcherProbe.dylib" \
-            -framework Foundation \
-            -framework UIKit \
-            SwitcherProbe.o \
-            -o SwitcherProbe.dylib
+          xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK" -fobjc-arc -miphoneos-version-min=15.0 -fmodules -c SwitcherProbe.m -o SwitcherProbe.o
+          xcrun --sdk iphoneos clang -arch arm64e -isysroot "$SDK" -miphoneos-version-min=15.0 -dynamiclib -Xlinker -fixup_chains -install_name "/Library/MobileSubstrate/DynamicLibraries/SwitcherProbe.dylib" -framework Foundation -framework UIKit SwitcherProbe.o -o SwitcherProbe.dylib
           file SwitcherProbe.dylib
           ldid -S SwitcherProbe.dylib
 
       - name: Package probe deb
-        run: |
-          mkdir -p pkg/var/jb/Library/MobileSubstrate/DynamicLibraries
-          cp SwitcherProbe.dylib pkg/var/jb/Library/MobileSubstrate/DynamicLibraries/
-          cat > pkg/DEBIAN/control <<'EOF'
-          Package: com.qingsplit.switcherprobe
-          Name: QingSplit SwitcherProbe (Phase0 read-only)
-          Version: 0.1.0
-          Architecture: iphoneos-arm64e
-          Description: Read-only Phase0 probe for switcher route. NO state written.
-          Maintainer: QingSplit
-          Section: Tweaks
-          Depends: mobilesubstrate
-          EOF
-          mkdir -p pkg/DEBIAN
-          cat > pkg/DEBIAN/control <<'EOF'
-Package: com.qingsplit.switcherprobe
-Name: QingSplit SwitcherProbe (Phase0 read-only)
-Version: 0.1.0
-Architecture: iphoneos-arm64e
-Description: Read-only Phase0 probe for switcher route. NO state written.
-Maintainer: QingSplit
-Section: Tweaks
-Depends: mobilesubstrate
-EOF
-          cat > pkg/DEBIAN/plist <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Filter</key>
-    <dict>
-        <key>Bundles</key>
-        <array>
-            <string>com.apple.springboard</string>
-        </array>
-    </dict>
-</dict>
-</plist>
-EOF
-          mkdir -p pkg/Library/MobileSubstrate/DynamicLibraries
-          cp SwitcherProbe.dylib pkg/Library/MobileSubstrate/DynamicLibraries/
-          chmod 755 pkg/DEBIAN
-          dpkg-deb -b pkg SwitcherProbe_0.1.0_iphoneos-arm64e.deb 2>/dev/null || \
-            python3 - <<'PYEOF'
-import io, tarfile, lzma, time, os, subprocess
-# fallback manual deb build
-os.makedirs('fpkg/var/jb/Library/MobileSubstrate/DynamicLibraries', exist_ok=True)
-os.makedirs('fpkg/DEBIAN', exist_ok=True)
-os.makedirs('fpkg/Library/MobileSubstrate/DynamicLibraries', exist_ok=True)
-import shutil
-shutil.copy('SwitcherProbe.dylib','fpkg/var/jb/Library/MobileSubstrate/DynamicLibraries/')
-shutil.copy('SwitcherProbe.dylib','fpkg/Library/MobileSubstrate/DynamicLibraries/')
-open('fpkg/DEBIAN/control','w').write('''Package: com.qingsplit.switcherprobe
-Name: QingSplit SwitcherProbe (Phase0 read-only)
-Version: 0.1.0
-Architecture: iphoneos-arm64e
-Description: Read-only Phase0 probe for switcher route. NO state written.
-Maintainer: QingSplit
-Section: Tweaks
-Depends: mobilesubstrate
-''')
-subprocess.run(['tar','czf','data.tar.gz','-C','fpkg','var','Library'], check=True)
-subprocess.run(['tar','czf','control.tar.gz','-C','fpkg','DEBIAN'], check=True)
-import subprocess as sp2
-# ar: use system ar
-with open('SwitcherProbe_0.1.0_iphoneos-arm64e.deb','wb') as f:
-    pass
-# use dpkg if available else ar
-import shutil as sh
-if sh.which('dpkg-deb'):
-    subprocess.run(['dpkg-deb','-b','fpkg','SwitcherProbe_0.1.0_iphoneos-arm64e.deb'], check=True)
-else:
-    subprocess.run(['ar','rc','SwitcherProbe_0.1.0_iphoneos-arm64e.deb','debian-binary','control.tar.gz','data.tar.gz'], check=True)
-print("deb built fallback")
-PYEOF
-          ls -l SwitcherProbe_0.1.0_iphoneos-arm64e.deb
+        run: python3 probe_package.py
 
       - name: Upload probe deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: SwitcherProbe-deb
-          path: |
-            SwitcherProbe_0.1.0_iphoneos-arm64e.deb
+          path: SwitcherProbe_0.1.0_iphoneos-arm64e.deb
           if-no-files-found: warn
