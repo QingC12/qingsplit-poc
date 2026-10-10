@@ -2226,49 +2226,45 @@ static void poc_unadopt_window(UIWindow *w) {
                 if (wsid.length) target = poc_find_sb_container(wsid);   // 跳过浮窗树内被接管 view
                 if (target) poc_log(@"UNADOPT_RESEARCH sid=%@ newFrom=%@", wsid, poc_cls(target));
             }
+            // v0.6.14: 关闭浮窗 = 立即恢复该 app 全屏 —— pv 直接放回 SBRootSceneWindow 全屏显示
+            // （黑屏/左上角根因：放回 from 死容器或被隐藏；SBRootSceneWindow 是 SB 根窗口，全屏位置明确），
+            // 再 presenter 重激活让 SB 接管（接管成功则系统管理布局，失败则保持 SBRootSceneWindow 全屏）。
             CGRect full = [[UIScreen mainScreen] bounds];
-            if (target && pv.superview != target) {
+            UIWindow *root = nil;
+            for (UIWindow *rw in [[UIApplication sharedApplication] windows]) {
+                if ([poc_cls(rw) isEqualToString:@"SBRootSceneWindow"]) { root = rw; break; }
+            }
+            if (root && pv.superview != root) {
                 [pv removeFromSuperview];
                 @try {
-                    NSInteger idx = idxN ? [idxN integerValue] : 0;
-                    if (idx >= 0 && idx <= (NSInteger)target.subviews.count) {
-                        [target insertSubview:pv atIndex:(NSUInteger)idx];
-                    } else {
-                        [target addSubview:pv];
-                    }
-                    // v0.6.11: 放回时先隐藏（防左上角闪烁），frame 设屏幕全屏（不再强改容器布局，
-                    // 由 presenter 激活后系统接管布局为全屏）
-                    pv.hidden = YES;
-                    pv.frame = full;
+                    [root addSubview:pv];
+                    pv.hidden = NO;
+                    pv.frame = root.bounds;
+                    [root setNeedsLayout];
                     putBack = YES;
-                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@ hiddenUntilReact", win_get(w, kWinSid), poc_cls(target));
+                    poc_log(@"UNADOPT_OK sid=%@ putBack=SBRootSceneWindow frame=%@", win_get(w, kWinSid), NSStringFromCGRect(root.bounds));
                 } @catch (NSException *e) {
-                    [target addSubview:pv];
-                    pv.frame = full;
+                    [root addSubview:pv];
+                    pv.hidden = NO;
+                    pv.frame = root.bounds;
                     putBack = YES;
-                    poc_log(@"UNADOPT_INSERT_EXC %@ → addSubview", e.name);
+                    poc_log(@"UNADOPT_INSERT_EXC %@ → SBRootSceneWindow addSubview", e.name);
                 }
             }
             if (!putBack) {
-                // 兜底：挂到 SBRootSceneWindow（保持视图在树，SB 呈现系统可继续管理）
-                UIWindow *root = nil;
-                for (UIWindow *rw in [[UIApplication sharedApplication] windows]) {
-                    if ([poc_cls(rw) isEqualToString:@"SBRootSceneWindow"]) { root = rw; break; }
-                }
-                if (root && pv.superview != root) {
+                // 兜底：原容器放回（保持视图在树，SB 呈现系统可继续管理）
+                UIView *target = (from && poc_view_in_window_tree(from)) ? from : nil;
+                if (target && pv.superview != target) {
                     [pv removeFromSuperview];
-                    [root addSubview:pv];
-                    pv.hidden = YES;
+                    [target addSubview:pv];
+                    pv.hidden = NO;
                     pv.frame = full;
                     putBack = YES;
-                    poc_log(@"UNADOPT_FALLBACK sid=%@ → SBRootSceneWindow hiddenUntilReact", win_get(w, kWinSid));
+                    poc_log(@"UNADOPT_FALLBACK sid=%@ putBack=%@", win_get(w, kWinSid), poc_cls(target));
                 }
             }
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
-            // v0.6.13: 延迟恢复 —— 只做 presenter 重激活（v0.6.12 的 scene activateWithTransitionContext:
-            // 真机实锤崩溃触发安全模式，已移除）。pv 保持隐藏不主动显示：若 presenter 激活被 SB 接管
-            // 则系统会自行布局显示全屏；若未接管则 pv 隐藏 → 主屏干净无左上角残留（app 留后台，
-            // 用户需要时上滑切换器点卡片恢复全屏）。不再主动显示 pv（防左上角闪烁/残留）。
+            // v0.6.14: presenter 重激活延迟执行（让 SB 接管布局；不触发任何 scene 激活，安全）
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 @try {
                     poc_reactivate_presenter(pv);
@@ -3945,7 +3941,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.13 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.14 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
