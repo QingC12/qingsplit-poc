@@ -2144,12 +2144,12 @@ static void poc_picker_geo(NSUInteger n, CGFloat *cxOut, CGFloat *cyOut, CGFloat
     NSUInteger rings = (n <= 6) ? 1 : ((n <= 14) ? 2 : 3);
     CGFloat cyS = (rings >= 3) ? MIN(H - 150.0, 640.0)
                : ((rings == 2) ? MIN(H - 150.0, 660.0) : MIN(H - 150.0, 700.0));
-    CGFloat R = MIN(110.0, (880.0 - cyS) / 0.94);
+    // v0.4.84: 整体缩小 —— R 110→92、径向 48→40（图标同步 36×48）
+    CGFloat R = MIN(92.0, (880.0 - cyS) / 0.94);
     R = MIN(R, cx - 16.0);
     if (rings > 1) {
-        // v0.4.82: 径向间隔 62→48，内中外圈更紧凑
-        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 48.0 * (CGFloat)(rings - 1),
-                           cx - 16.0 - 48.0 * (CGFloat)(rings - 1));
+        CGFloat Rmax = MIN((880.0 - cyS) / 0.94 - 40.0 * (CGFloat)(rings - 1),
+                           cx - 16.0 - 40.0 * (CGFloat)(rings - 1));
         if (R > Rmax) R = Rmax;
     }
     if (cxOut) *cxOut = cx;
@@ -2178,7 +2178,8 @@ static void poc_picker_show(void) {
         CGFloat gx, gy, gR, gPX, gPY;
         poc_picker_geo(n, &gx, &gy, &gR, &gPX, &gPY);      // v0.4.73: 动态几何
         const CGFloat pw = 200;
-        const CGFloat pH = ceil(175.0 + 0.94 * (gR + (n > 8 ? 62.0 : 0.0)) + 24.0);   // v0.4.76: 面板高度容纳外圈最下端
+        CGFloat pH_extra = (n <= 6) ? 0.0 : ((n <= 14) ? 40.0 : 80.0);   // v0.4.84: 外圈 40/圈
+        const CGFloat pH = ceil(175.0 + 0.94 * (gR + pH_extra) + 24.0);
         // v0.4.75: 手势指引图标随圆心对齐（红线指示 → 小指引）
         UIView *qind = [g_pickerVC.view viewWithTag:781];
         if (qind) qind.center = CGPointMake(gx, gy);
@@ -2226,34 +2227,26 @@ static void poc_picker_show(void) {
             double theta = M_PI;                            // 180°（单点）
             // v0.4.82: 每圈统一跨度 150°（105°..255°），step 按圈内数量均分；径向间隔 48
             if (ringTotal > 1) theta = 105.0 * M_PI / 180.0 + (double)j * (150.0 * M_PI / 180.0) / (double)(ringTotal - 1);
-            CGFloat rr = R + (CGFloat)ring * 48.0;
+            CGFloat rr = R + (CGFloat)ring * 40.0;          // v0.4.84: 径向 40
             CGFloat ix = pw + rr * cos(theta);              // 面板内 x（圆心面板内 (pw, cyP)）
             CGFloat iy = cyP - rr * sin(theta);             // 面板内 y
             NSDictionary *app = apps[i];
             NSString *bid = app[@"bundle"] ?: @"";
             NSString *name = app[@"name"] ?: bid;
             UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
-            b.frame = CGRectMake(0, 0, 40, 54);   // v0.4.77: 内圈不拥挤，图标再缩小
+            b.frame = CGRectMake(0, 0, 36, 48);   // v0.4.84: 整体缩小，只显示图标（白底看不清文字，已移除）
             b.center = CGPointMake(ix, iy);
             b.tag = 600 + (NSInteger)i;
             b.backgroundColor = [UIColor clearColor];
             UIImage *icon = poc_picker_icon(bid);
-            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(4, 1, 32, 32)];
+            UIImageView *iv = [[UIImageView alloc] initWithFrame:CGRectMake(4, 10, 28, 28)];
             iv.contentMode = UIViewContentModeScaleAspectFit;
-            iv.layer.cornerRadius = 8;
+            iv.layer.cornerRadius = 7;
             iv.clipsToBounds = YES;
             iv.image = icon;   // nil 时显示占位色块（兜底）
             iv.backgroundColor = [UIColor colorWithWhite:0.32 alpha:0.9];
             iv.userInteractionEnabled = NO;
             [b addSubview:iv];
-            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(0, 34, 40, 18)];
-            lb.text = name.length > 6 ? [name substringToIndex:6] : name;
-            lb.textColor = [UIColor whiteColor];
-            lb.font = [UIFont systemFontOfSize:9];
-            lb.textAlignment = NSTextAlignmentCenter;
-            lb.numberOfLines = 2;
-            lb.userInteractionEnabled = NO;
-            [b addSubview:lb];
             [b addTarget:[POCBootstrap class] action:@selector(poc_picker_cell_tapped:) forControlEvents:UIControlEventTouchUpInside];
             // v0.4.79: 逐个弹性弹入（Stheno 式 staggered spring —— 从圆心方向放大进入）
             b.transform = CGAffineTransformMakeScale(0.5, 0.5);
@@ -2286,7 +2279,7 @@ static void poc_picker_show(void) {
             NSUInteger pcnt = MIN(ringCap[pring], n - pcum);
             double pth = M_PI;
             if (pcnt > 1) pth = 105.0 * M_PI / 180.0 + (double)pj * (150.0 * M_PI / 180.0) / (double)(pcnt - 1);
-            double prr = R + (double)pring * 48.0;
+            double prr = R + (double)pring * 40.0;
             poc_log(@"PICKER_ICON i=%ld ring=%ld th=%.0f rr=%.0f c=(%.0f,%.0f)",
                     (long)pi, (long)pring, pth * 180.0 / M_PI, prr,
                     gx + prr * cos(pth), gy - prr * sin(pth));
@@ -2518,7 +2511,7 @@ static void poc_setup_edge_trigger(void) {
                 NSUInteger cnt = MIN(ringCap[ring], n - cum);
                 double theta = M_PI;
                 if (cnt > 1) theta = 105.0 * M_PI / 180.0 + (double)j * (150.0 * M_PI / 180.0) / (double)(cnt - 1);
-                double rr = R + (double)ring * 48.0;
+                double rr = R + (double)ring * 40.0;
                 // v0.4.78: 角度差归一化修正 —— 原实现 |ang-θ|∈(π,2π) 时 2π-dAng 变负（下半屏图标 θ>180° 受影响，选中失效）
                 double dAng = fabs(ang - theta);
                 dAng = fmod(dAng, 2.0 * M_PI);
@@ -2582,7 +2575,7 @@ static void poc_setup_edge_trigger(void) {
                 NSUInteger cnt = MIN(ringCap[ring], n - cum);
                 double theta = M_PI;
                 if (cnt > 1) theta = 105.0 * M_PI / 180.0 + (double)j * (150.0 * M_PI / 180.0) / (double)(cnt - 1);
-                double rr = R + (double)ring * 48.0;
+                double rr = R + (double)ring * 40.0;
                 // v0.4.78: 角度差归一化修正（同 Changed）
                 double dAng = fabs(ang - theta);
                 dAng = fmod(dAng, 2.0 * M_PI);
@@ -2622,7 +2615,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.83 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.4.84 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
