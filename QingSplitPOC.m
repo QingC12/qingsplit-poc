@@ -889,6 +889,7 @@ static void poc_save_float_state_for(NSString *sid, CGRect f);
 static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声明（onPan 拖到底→主屏打开早于定义）
 static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
 static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明（设置读取，定义在下方全局区）
+static NSString *poc_frontmost_bundle(void);   // v0.6.15: 选择器段需要（定义在下方）
 
 @interface QSFloatContainer : UIView
 @property (nonatomic, strong) UIView *contentView;
@@ -1651,6 +1652,7 @@ static const void *kWinAdoptedFrom = &kWinAdoptedFrom;  // v0.6.5: ADOPT 原 sup
 static const void *kWinAdoptedIdx = &kWinAdoptedIdx;    // v0.6.5: ADOPT 原 index
 static const void *kWinScene = &kWinScene;    // v0.6.9: 目标 FBScene（UNADOPT 后激活恢复全屏呈现）
 static const void *kWinBundle = &kWinBundle;  // v0.6.10: 目标 bundleID（UNADOPT 后 LS 激活恢复全屏）
+static const void *kWinPrevBundle = &kWinPrevBundle;  // v0.6.15: 建窗前的前台 app（关闭浮窗激活回主屏）
 static void win_set(UIWindow *w, const void *key, id val) {
     if (w) objc_setAssociatedObject(w, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -1886,6 +1888,7 @@ static void poc_neutralize_sb_gestures(void) {
 static UIView *g_hostView = nil;
 static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，20s 后移除）
 static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene id
+static NSString *g_prevBundle = nil;    // v0.6.15: 打开浮窗前的前台 app（关闭浮窗时激活回主屏）
 static NSInteger g_lastCtx = 0;    // v0.1.8: 保持模式 —— 当前 host 的 contextID
 static BOOL g_apiProbed = NO;      // v0.2.0: scene 激活 API 只探测一次
 static BOOL g_floatClosed = NO;   // v0.3.18: 用户点击关闭后保持关闭（防止 1s tick 自动重建）；目标 scene 消失后复位
@@ -1909,6 +1912,26 @@ static BOOL poc_launch_app(NSString *bundle);    // v0.4.30: 前向声明（tick
 static void poc_opening_show(NSString *name);    // v0.4.31: 前向声明（FLOAT_CLOSED/LAUNCH_TIMEOUT/POC_OK 早于定义）
 static void poc_opening_hide(void);
 // v0.4.35: 当前浮窗目标 bundle（sceneID:xxx-default → xxx）；无浮窗时返回 g_lastSid 解析值
+// v0.6.15: 前台 app bundle（建窗前记录，关闭浮窗时激活回主屏）
+static NSString *poc_frontmost_bundle(void) {
+    @try {
+        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+        id app = [ws performSelector:@selector(frontmostApplication)];
+        if (app) {
+            id bid = [app performSelector:@selector(bundleIdentifier)];
+            if (bid) return [NSString stringWithFormat:@"%@", bid];
+        }
+    } @catch (NSException *e) { }
+    @try {
+        id ctl = [NSClassFromString(@"SBApplicationController") performSelector:@selector(sharedInstance)];
+        id app = [ctl performSelector:@selector(frontApplication)];
+        if (app) {
+            id bid = [app performSelector:@selector(bundleIdentifier)];
+            if (bid) return [NSString stringWithFormat:@"%@", bid];
+        }
+    } @catch (NSException *e) { }
+    return nil;
+}
 static NSString *poc_current_bundle(void) {
     NSString *sid = g_lastSid;
     if (!sid.length) return nil;
@@ -2226,48 +2249,42 @@ static void poc_unadopt_window(UIWindow *w) {
                 if (wsid.length) target = poc_find_sb_container(wsid);   // 跳过浮窗树内被接管 view
                 if (target) poc_log(@"UNADOPT_RESEARCH sid=%@ newFrom=%@", wsid, poc_cls(target));
             }
-            // v0.6.14: 关闭浮窗 = 立即恢复该 app 全屏 —— pv 直接放回 SBRootSceneWindow 全屏显示
-            // （黑屏/左上角根因：放回 from 死容器或被隐藏；SBRootSceneWindow 是 SB 根窗口，全屏位置明确），
-            // 再 presenter 重激活让 SB 接管（接管成功则系统管理布局，失败则保持 SBRootSceneWindow 全屏）。
-            CGRect full = [[UIScreen mainScreen] bounds];
+            // v0.6.15: 关闭浮窗 = 回主屏 —— pv 隐藏放回（无左上角残留；v0.6.14 实锤放哪都
+            // 停留在接管时状态，view 层无法恢复全屏），延迟 LS 激活建窗前的前台 app（豆包）
+            // → 主屏正常显示豆包；目标 app 留后台，用户需要时切换器/选择器再开。
             UIWindow *root = nil;
             for (UIWindow *rw in [[UIApplication sharedApplication] windows]) {
                 if ([poc_cls(rw) isEqualToString:@"SBRootSceneWindow"]) { root = rw; break; }
             }
-            if (root && pv.superview != root) {
+            UIView *target = (from && poc_view_in_window_tree(from)) ? from : root;
+            if (target && pv.superview != target) {
                 [pv removeFromSuperview];
-                @try {
-                    [root addSubview:pv];
-                    pv.hidden = NO;
-                    pv.frame = root.bounds;
-                    [root setNeedsLayout];
-                    putBack = YES;
-                    poc_log(@"UNADOPT_OK sid=%@ putBack=SBRootSceneWindow frame=%@", win_get(w, kWinSid), NSStringFromCGRect(root.bounds));
-                } @catch (NSException *e) {
-                    [root addSubview:pv];
-                    pv.hidden = NO;
-                    pv.frame = root.bounds;
-                    putBack = YES;
-                    poc_log(@"UNADOPT_INSERT_EXC %@ → SBRootSceneWindow addSubview", e.name);
-                }
-            }
-            if (!putBack) {
-                // 兜底：原容器放回（保持视图在树，SB 呈现系统可继续管理）
-                UIView *target = (from && poc_view_in_window_tree(from)) ? from : nil;
-                if (target && pv.superview != target) {
-                    [pv removeFromSuperview];
-                    [target addSubview:pv];
-                    pv.hidden = NO;
-                    pv.frame = full;
-                    putBack = YES;
-                    poc_log(@"UNADOPT_FALLBACK sid=%@ putBack=%@", win_get(w, kWinSid), poc_cls(target));
-                }
+                [target addSubview:pv];
+                pv.hidden = YES;
+                putBack = YES;
+                poc_log(@"UNADOPT_OK sid=%@ putBack=%@ hidden", win_get(w, kWinSid), poc_cls(target));
             }
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
-            // v0.6.14: presenter 重激活延迟执行（让 SB 接管布局；不触发任何 scene 激活，安全）
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSString *prevB = win_get(w, kWinPrevBundle);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 @try {
+                    // presenter 重激活（让 SB 尝试接管；pv 保持隐藏，无残留风险）
                     poc_reactivate_presenter(pv);
+                    // 激活回主屏 app
+                    if (prevB.length) {
+                        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                            @try {
+                                id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+                                BOOL ok = NO;
+                                if (ws) ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:prevB];
+                                dispatch_async(dispatch_get_main_queue(), ^{
+                                    poc_log(@"UNADOPT_BACK_HOME prev=%@ ok=%d", prevB, ok);
+                                });
+                            } @catch (NSException *e) {
+                                poc_log(@"UNADOPT_BACK_EXC %@", e.name);
+                            }
+                        });
+                    }
                 } @catch (NSException *e) {
                     poc_log(@"UNADOPT_REACT_EXC %@", e.name);
                 }
@@ -2993,6 +3010,7 @@ static void poc_try_float(void) {
         win_set(g_win, kWinDiag, g_diag);
         win_set(g_win, kWinScene, scene);   // v0.6.9: 存目标 scene（UNADOPT 激活用）
         win_set(g_win, kWinBundle, wanted);  // v0.6.10: 存 bundleID（UNADOPT LS 激活用）
+        win_set(g_win, kWinPrevBundle, g_prevBundle);  // v0.6.15: 存前台 app（关闭浮窗激活回主屏）
         poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=DARK native=%@ src=%@",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
@@ -3398,6 +3416,7 @@ static void poc_picker_select(NSDictionary *app) {
         poc_log(@"PICKER_SELECT sid=%@ running=1 armed=1", sid);
     } else {
         // v0.4.24: 未运行 → 启动应用，tick 持续轮询等待 scene 出现后建浮窗
+        g_prevBundle = poc_frontmost_bundle();   // v0.6.15: 记录打开浮窗前的前台 app
         g_launchPending = YES;
         g_launchPendingAt = CACurrentMediaTime();
         poc_opening_show(app[@"name"] ?: sid);   // v0.4.31: 立即"正在打开"反馈
@@ -3941,7 +3960,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.14 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.15 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
