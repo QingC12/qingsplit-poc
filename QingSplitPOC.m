@@ -2591,13 +2591,6 @@ static void poc_setup_edge_trigger(void) {
         poc_log(@"SAFETY_NET_EXC %@", e.name);
     }
 }
-// v0.5.2: 锁屏/失活处理 —— 兜底关闭所有浮窗（窗口残留会拦截主屏触摸）
-+ (void)poc_app_inactive:(NSNotification *)note {
-    if (g_wins.count) {
-        poc_log(@"LOCK_OR_INACTIVE note=%@ wins=%lu → close all", note.name, (unsigned long)g_wins.count);
-        poc_close_all_windows();
-    }
-}
 
 @implementation POCBootstrap
 
@@ -2723,6 +2716,14 @@ static void poc_setup_edge_trigger(void) {
     if (idx < (NSInteger)g_pickerApps.count) {
         if (g_pickerImpFB) [g_pickerImpFB impactOccurred];   // 选中触觉（Myrtle 特征）
         poc_picker_select(g_pickerApps[idx]);
+    }
+}
+
+// v0.5.2: 锁屏/失活兜底 —— 关闭所有浮窗并恢复主屏（窗口残留会拦截主屏触摸）
++ (void)poc_app_inactive:(NSNotification *)note {
+    if (g_wins.count) {
+        poc_log(@"LOCK_OR_INACTIVE note=%@ wins=%lu → close all", note.name, (unsigned long)g_wins.count);
+        poc_close_all_windows();
     }
 }
 
