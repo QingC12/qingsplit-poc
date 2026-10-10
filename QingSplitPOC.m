@@ -667,6 +667,130 @@ static UIView *poc_make_presenter_view(NSString *targetSid, id targetScene) {
 }
 
 // ----------------------------------------------------------------------------
+// v0.6.2: presenter 链全量探针（只读）—— 不猜结构，真机 dump：
+//   A) scene 的 ivar/property 名 + 值类名（找 presentationManager 真实 key）
+//   B) 窗口树里所有 SceneLayer/Presentation 容器的 dataSource→presenter→presentationView 链
+//   C) connectedScenes 全量（类名 + activationState 真实 key）
+// 日志量大但一次看全，用于定位 presenter 呈现接管入口。
+// ----------------------------------------------------------------------------
+static NSArray *poc_ivar_names(id obj) {
+    NSMutableArray *out = [NSMutableArray array];
+    if (!obj) return out;
+    unsigned int c = 0;
+    Ivar *ivs = class_copyIvarList([obj class], &c);
+    for (unsigned int i = 0; i < c; i++) {
+        const char *n = ivar_getName(ivs[i]);
+        if (n) [out addObject:[NSString stringWithUTF8String:n]];
+    }
+    if (ivs) free(ivs);
+    return out;
+}
+static NSArray *poc_prop_names(id obj) {
+    NSMutableArray *out = [NSMutableArray array];
+    if (!obj) return out;
+    unsigned int c = 0;
+    objc_property_t *ps = class_copyPropertyList([obj class], &c);
+    for (unsigned int i = 0; i < c; i++) {
+        const char *n = property_getName(ps[i]);
+        if (n) [out addObject:[NSString stringWithUTF8String:n]];
+    }
+    if (ps) free(ps);
+    return out;
+}
+static void poc_probe_presenter_chain(NSString *targetSid, id targetScene) {
+    @try {
+        // A) scene ivars：只打值非 nil 且类名含 Presentation/Manager/presenter/Activation 的
+        NSArray *ivs = poc_ivar_names(targetScene);
+        NSMutableArray *hit = [NSMutableArray array];
+        for (NSString *n in ivs) {
+            id v = poc_tryKVC(targetScene, @[n]);
+            if (!v || [v isKindOfClass:[NSNull class]]) continue;
+            NSString *cn = poc_cls(v);
+            if ([cn containsString:@"Presentation"] || [cn containsString:@"presentation"] ||
+                [cn containsString:@"Manager"] || [cn containsString:@"Presenter"] ||
+                [cn containsString:@"Activation"] || [cn containsString:@"activation"]) {
+                [hit addObject:[NSString stringWithFormat:@"%@=%@", n, cn]];
+            }
+        }
+        poc_log(@"PROBE_SCENE_IVARS sid=%@ hit=%ld %@", targetSid, (long)hit.count,
+                hit.count ? [hit componentsJoinedByString:@" | "] : @"(none)");
+        // scene props
+        NSArray *prs = poc_prop_names(targetScene);
+        NSMutableArray *ph = [NSMutableArray array];
+        for (NSString *n in prs) {
+            id v = poc_tryKVC(targetScene, @[n]);
+            if (!v || [v isKindOfClass:[NSNull class]]) continue;
+            NSString *cn = poc_cls(v);
+            if ([cn containsString:@"Presentation"] || [cn containsString:@"presentation"] ||
+                [cn containsString:@"Manager"] || [cn containsString:@"Presenter"] ||
+                [cn containsString:@"Activation"]) {
+                [ph addObject:[NSString stringWithFormat:@"%@=%@", n, cn]];
+            }
+        }
+        poc_log(@"PROBE_SCENE_PROPS sid=%@ hit=%ld %@", targetSid, (long)ph.count,
+                ph.count ? [ph componentsJoinedByString:@" | "] : @"(none)");
+        // B) 窗口树全量容器 dump（不匹配 sid 也打，看整体结构）
+        NSMutableSet *winSet = [NSMutableSet set];
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            [winSet addObject:[NSValue valueWithNonretainedObject:w]];
+        }
+        for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+            NSArray *ws = poc_tryKVC(sc, @[@"windows"]);
+            for (UIWindow *w in ws) { if (w) [winSet addObject:[NSValue valueWithNonretainedObject:w]]; }
+        }
+        for (NSValue *vv in winSet) {
+            UIWindow *w = [vv nonretainedObjectValue];
+            if (!w) continue;
+            __block NSMutableArray *hits = [NSMutableArray array];
+            __block void (^walk)(UIView *, int);
+            void (^walkBlock)(UIView *, int) = ^(UIView *v, int depth) {
+                if (!v || depth > 12) return;
+                NSString *cn = poc_cls(v);
+                if ([cn containsString:@"SceneLayer"] || [cn containsString:@"Presentation"]) {
+                    [hits addObject:v];
+                }
+                for (UIView *c in v.subviews) walk(c, depth + 1);
+            };
+            walk = walkBlock;
+            walk(w, 0);
+            if (!hits.count) continue;
+            poc_log(@"PROBE_WIN class=%@ hits=%ld", poc_cls(w), (long)hits.count);
+            for (UIView *v in hits) {
+                @try {
+                    NSString *cn = poc_cls(v);
+                    id cscene = poc_tryKVC(v, @[@"_scene", @"scene"]);
+                    NSString *csid = cscene ? poc_scene_id(cscene) : @"nil";
+                    id ds = poc_tryKVC(v, @[@"_dataSource", @"dataSource"]);
+                    id presenter = poc_tryKVC(v, @[@"presenter", @"_presenter"]);
+                    if (!presenter) presenter = poc_tryKVC(ds, @[@"presenter", @"_presenter"]);
+                    id pv = presenter ? poc_tryKVC(presenter, @[@"presentationView", @"_presentationView", @"view"]) : nil;
+                    poc_log(@"PROBE_NODE class=%@ sid=%@ ds=%@ presenter=%@ pv=%@ depth=%d",
+                            cn, csid, poc_cls(ds), poc_cls(presenter), poc_cls(pv), 0);
+                    if (pv && [pv isKindOfClass:[UIView class]]) {
+                        // 命中即记录：目标 scene 的 presentationView 所在链
+                        if (csid && [csid isEqualToString:targetSid]) {
+                            poc_log(@"PROBE_MATCH sid=%@ class=%@ presenter=%@ pv=%@",
+                                    targetSid, cn, poc_cls(presenter), poc_cls(pv));
+                        }
+                    }
+                } @catch (NSException *e) { }
+            }
+        }
+        // C) connectedScenes 全量
+        for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+            NSString *cn = poc_cls(sc);
+            if ([cn containsString:@"Scene"]) {
+                id act = poc_tryKVC(sc, @[@"activationState", @"_activationState", @"state"]);
+                id pm = poc_tryKVC(sc, @[@"_presentationManager", @"presentationManager", @"presentationManagerForVisibility"]);
+                poc_log(@"PROBE_SCENE class=%@ sid=%@ act=%@ pm=%@", cn, poc_scene_id(sc), poc_str(act), poc_cls(pm));
+            }
+        }
+    } @catch (NSException *e) {
+        poc_log(@"PROBE_EXC %@", e.name);
+    }
+}
+
+// ----------------------------------------------------------------------------
 // Z-order（最小写）：遍历窗口容器链找目标 scene 的 presenter → _setActivePrioritizedPresenter:
 // 探针已验证链: 容器(_UISceneLayerHostContainerView) → _dataSource(_UIScenePresentationView)
 //              → presenter → owner → _scenePresentationManager
@@ -2572,6 +2696,16 @@ static void poc_try_float(void) {
     g_targetLc = layerCount;
     poc_log(@"TARGET sid=%@ pid=%ld lm=%@ layersKind=%@ layerCount=%ld layer=%@ layerType=%@ ctx=%ld",
             sid, (long)pid, lmCls, layersKind, (long)layerCount, poc_cls(layer), layerType, (long)ctx);
+
+    // v0.6.2: presenter 链全量探针（10s 节流，只读 dump）
+    static NSTimeInterval lastProbe = 0;
+    static NSString *lastProbeSid = nil;
+    NSTimeInterval nowProbe = CACurrentMediaTime();
+    if (!lastProbeSid || ![lastProbeSid isEqualToString:sid] || nowProbe - lastProbe > 10.0) {
+        lastProbe = nowProbe;
+        lastProbeSid = [sid copy];
+        poc_probe_presenter_chain(sid, scene);
+    }
 
     // v0.1.9: 前台检测放宽 —— 不再阻塞前台 host！
     // v0.1.8 实锤：后台 app 的 scene layer 被 iOS 周期性重建/冻结（ctx 漂移+空窗），
