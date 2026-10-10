@@ -882,6 +882,7 @@ static void ctr_set(id c, const void *key, id val);
 static id ctr_get(id c, const void *key);
 static void poc_close_window(UIWindow *w);
 static void poc_unadopt_window(UIWindow *w);   // v0.6.5: 前向声明（close_window 定义早于实现）
+static UIView *poc_find_sb_container(NSString *sid);   // v0.6.8: unadopt 重找当前容器需要
 static void poc_save_float_state_for(NSString *sid, CGRect f);
 static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声明（onPan 拖到底→主屏打开早于定义）
 static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
@@ -2163,6 +2164,46 @@ static void poc_screen_restore(void) {
     g_sbContainer = nil;
 }
 
+// v0.6.8: 判断 view 是否仍在任意 UIApplication 窗口的视图树内（用于 UNADOPT 选放回目标）
+static BOOL poc_view_in_window_tree(UIView *v) {
+    if (!v) return NO;
+    @try {
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            UIView *p = v;
+            while (p) {
+                if (p == w) return YES;
+                p = p.superview;
+            }
+        }
+    } @catch (NSException *e) { }
+    return NO;
+}
+
+// v0.6.8: 放回 presentationView 后重新激活 presenter（系统恢复呈现布局为全屏）
+static void poc_reactivate_presenter(UIView *pv) {
+    @try {
+        id pres = poc_tryKVC(pv, @[@"presenter", @"_presenter"]);
+        if (!pres) { poc_log(@"REACT_NOPRES"); return; }
+        // ① presenter.activate —— 让 presenter 重新接管呈现
+        SEL act = NSSelectorFromString(@"activate");
+        if ([pres respondsToSelector:act]) {
+            [pres performSelector:act];
+            poc_log(@"REACT_ACTIVATE presenter=%@", poc_cls(pres));
+        }
+        // ② owner._setActivePrioritizedPresenter: —— 提层到活跃优先级（SBSceneManagerCoordinator）
+        id owner = poc_tryKVC(pres, @[@"owner", @"_owner"]);
+        if (owner) {
+            SEL sap = NSSelectorFromString(@"_setActivePrioritizedPresenter:");
+            if ([owner respondsToSelector:sap]) {
+                [owner performSelector:sap withObject:pres];
+                poc_log(@"REACT_OWNER_SET owner=%@", poc_cls(owner));
+            }
+        }
+    } @catch (NSException *e) {
+        poc_log(@"REACT_EXC %@", e.name);
+    }
+}
+
 // v0.6.5: 解除 presenter 接管 —— 把 presentationView 放回原 SB 容器，恢复系统呈现（防触摸瘫痪）
 // 关闭/锁屏/失活时调用；放回失败兜底 addSubview 到 SBRootSceneWindow
 static void poc_unadopt_window(UIWindow *w) {
@@ -2174,25 +2215,32 @@ static void poc_unadopt_window(UIWindow *w) {
         BOOL putBack = NO;
         if (pv) {
             [pv setHidden:NO];
-            if (from && pv.superview != from) {
+            // v0.6.8: 原容器可能已被系统释放/重建（不在窗口树）→ 重找当前该 app 呈现容器
+            UIView *target = (from && poc_view_in_window_tree(from)) ? from : nil;
+            if (!target) {
+                NSString *wsid = win_get(w, kWinSid);
+                if (wsid.length) target = poc_find_sb_container(wsid);   // 跳过浮窗树内被接管 view
+                if (target) poc_log(@"UNADOPT_RESEARCH sid=%@ newFrom=%@", wsid, poc_cls(target));
+            }
+            if (target && pv.superview != target) {
                 [pv removeFromSuperview];
                 @try {
                     NSInteger idx = idxN ? [idxN integerValue] : 0;
-                    if (idx >= 0 && idx <= (NSInteger)from.subviews.count) {
-                        [from insertSubview:pv atIndex:(NSUInteger)idx];
+                    if (idx >= 0 && idx <= (NSInteger)target.subviews.count) {
+                        [target insertSubview:pv atIndex:(NSUInteger)idx];
                     } else {
-                        [from addSubview:pv];
+                        [target addSubview:pv];
                     }
                     // v0.6.7: 放回后恢复全屏布局（接管时被改成浮窗尺寸 → 主屏左上角小窗）
-                    pv.frame = from.bounds;
+                    pv.frame = target.bounds;
                     pv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                    [from setNeedsLayout];
-                    [from layoutIfNeeded];
+                    [target setNeedsLayout];
+                    [target layoutIfNeeded];
                     putBack = YES;
-                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@ frame=%@", win_get(w, kWinSid), poc_cls(from), NSStringFromCGRect(from.bounds));
+                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@ frame=%@", win_get(w, kWinSid), poc_cls(target), NSStringFromCGRect(target.bounds));
                 } @catch (NSException *e) {
-                    [from addSubview:pv];
-                    pv.frame = from.bounds;
+                    [target addSubview:pv];
+                    pv.frame = target.bounds;
                     putBack = YES;
                     poc_log(@"UNADOPT_INSERT_EXC %@ → addSubview", e.name);
                 }
@@ -2211,6 +2259,8 @@ static void poc_unadopt_window(UIWindow *w) {
                 }
             }
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
+            // v0.6.8: 放回后重新激活 presenter —— 系统恢复呈现布局为全屏（核心修复）
+            poc_reactivate_presenter(pv);
         }
         win_set(w, kWinAdopted, nil);
         win_set(w, kWinAdoptedFrom, nil);
