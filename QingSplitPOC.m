@@ -2367,7 +2367,7 @@ static void poc_keep_float(void) {
                         // _UIContextLayerHostView）并挂到 contentWrapper，复用既有布局/圆角/手势链。
                         // 旧实现直接 addSubview 到容器 → 旧 hostView 未移除（hostView 实际挂 wrapper）
                         // → 同一浮窗内两个内容视图重叠 + 缩放手势失效
-                        g_container.contentView = pv;   // setter: 移除旧 contentView + addSubview wrapper
+                        [(QSFloatContainer *)g_container setContentView:pv];   // setter: 移除旧 contentView + addSubview wrapper
                         g_hostView = pv;
                         win_set(g_win, kWinHostView, g_hostView);
                     }
