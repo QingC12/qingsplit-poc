@@ -758,6 +758,9 @@ static void poc_probe_presenter_chain(NSString *targetSid, id targetScene) {
     }
 }
 
+// 前向声明：poc_search_sb_container 定义在文件后部（SCREEN_HIDE 区），此处先声明原型
+static UIView *poc_search_sb_container(UIView *v, NSString *sid, int depth, BOOL *matched);
+
 // ----------------------------------------------------------------------------
 // v0.6.3: presenter 呈现接管（Stheno 式）—— 从 SB 容器链拿目标 app 的 presentationView
 // 探针实锤（v0.6.2）：窗口树里每个 _UISceneLayerHostContainerView → _dataSource
