@@ -106,10 +106,14 @@ jobs:
           //       ③ 保留 PSListController setPreferenceValue:specifier: swizzle 作写入保底 + SET_CALLED 日志
           static NSBundle *(*qs_orig_bundleForClass)(Class, SEL, Class) = NULL;
           static NSBundle *qs_swz_bundleForClass(Class self, SEL _cmd, Class cls) {
-              if (cls && strcmp(class_getName(cls), "QingSplitPrefsRootListController") == 0) {
-                  static NSBundle *our = nil;
-                  if (!our) our = [NSBundle bundleWithPath:@"/var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle"];
-                  if (our) return our;
+              if (cls) {
+                  const char *cn = class_getName(cls);
+                  // v0.4.86: 子页 QSTargetsController 同样需要 bundle 关联（否则 push 实例化崩，日志只到 BUNDLE_PATH_OK）
+                  if (strcmp(cn, "QingSplitPrefsRootListController") == 0 || strcmp(cn, "QSTargetsController") == 0) {
+                      static NSBundle *our = nil;
+                      if (!our) our = [NSBundle bundleWithPath:@"/var/jb/Library/PreferenceBundles/QingSplitPrefs.bundle"];
+                      if (our) return our;
+                  }
               }
               return qs_orig_bundleForClass(self, _cmd, cls);
           }
@@ -596,5 +600,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.85_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.86_iphoneos-arm64e.deb
           if-no-files-found: warn
