@@ -799,6 +799,72 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
 }
 
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// v0.6.17: 只读呈现探针 —— 定位 presentPresentable:withOptions:userInfo: 的接收者
+// （Stheno hook 面；不调用任何呈现方法，纯日志，零行为变更）
+// ----------------------------------------------------------------------------
+static void poc_probe_presentable(NSString *targetSid) {
+    @try {
+        SEL sel = sel_registerName("presentPresentable:withOptions:userInfo:");
+        NSArray *clsNames = @[
+            @"SBMainDisplaySceneManager",
+            @"SBMainWorkspaceSceneManager",
+            @"SBMainDisplaySceneManager",
+            @"SBSceneManager",
+            @"SBDisplaySceneManager",
+            @"SBSceneManagerCoordinator",
+            @"SBMainWorkspaceSceneManager",
+        ];
+        for (NSString *cn in clsNames) {
+            Class c = NSClassFromString(cn);
+            if (!c) { poc_log(@"PROBE_PRES_CLASS missing=%@", cn); continue; }
+            id inst = nil;
+            @try { inst = [c performSelector:@selector(sharedInstance)]; } @catch (NSException *e) { }
+            if (!inst) {
+                @try { inst = [c performSelector:@selector(sharedManager)]; } @catch (NSException *e) { }
+            }
+            if (inst && [inst respondsToSelector:sel]) {
+                poc_log(@"PROBE_PRES_HIT class=%@ inst=%@ resp=1", cn, NSStringFromClass([inst class]));
+            } else {
+                poc_log(@"PROBE_PRES_CLASS class=%@ inst=%@ resp=0", cn, inst ? NSStringFromClass([inst class]) : @"nil");
+            }
+        }
+        if (!targetSid.length) return;
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            BOOL matched = NO;
+            UIView *node = poc_search_sb_container(w, targetSid, 0, &matched);
+            if (!node || !matched) continue;
+            id presenter = poc_tryKVC(node, @[@"presenter", @"_presenter"]);
+            if (!presenter) {
+                id ds = poc_tryKVC(node, @[@"_dataSource", @"dataSource"]);
+                presenter = poc_tryKVC(ds, @[@"presenter", @"_presenter"]);
+            }
+            if (presenter) {
+                BOOL r = [presenter respondsToSelector:sel];
+                poc_log(@"PROBE_PRES_PRESENTER sid=%@ presenter=%@ resp=%d", targetSid, poc_cls(presenter), r);
+                id owner = poc_tryKVC(presenter, @[@"_owner", @"owner"]);
+                if (owner) {
+                    BOOL ro = [owner respondsToSelector:sel];
+                    poc_log(@"PROBE_PRES_OWNER sid=%@ owner=%@ resp=%d", targetSid, poc_cls(owner), ro);
+                    id mgr = poc_tryKVC(owner, @[@"_scenePresentationManager", @"scenePresentationManager"]);
+                    if (mgr) {
+                        BOOL rm = [mgr respondsToSelector:sel];
+                        poc_log(@"PROBE_PRES_MGR sid=%@ mgr=%@ resp=%d", targetSid, poc_cls(mgr), rm);
+                        id pm = poc_tryKVC(mgr, @[@"_presentationManager", @"presentationManager"]);
+                        if (pm) {
+                            BOOL rp = [pm respondsToSelector:sel];
+                            poc_log(@"PROBE_PRES_PM sid=%@ pm=%@ resp=%d", targetSid, poc_cls(pm), rp);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+    } @catch (NSException *e) {
+        poc_log(@"PROBE_PRES_EXC %@", e.name);
+    }
+}
+
 // Z-order（最小写）：遍历窗口容器链找目标 scene 的 presenter → _setActivePrioritizedPresenter:
 // 探针已验证链: 容器(_UISceneLayerHostContainerView) → _dataSource(_UIScenePresentationView)
 //              → presenter → owner → _scenePresentationManager
