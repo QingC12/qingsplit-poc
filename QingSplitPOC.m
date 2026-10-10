@@ -2258,29 +2258,35 @@ static void poc_unadopt_window(UIWindow *w) {
                 poc_log(@"UNADOPT_OK sid=%@ putBack=%@ hidden", win_get(w, kWinSid), poc_cls(target));
             }
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
-            NSString *prevB = win_get(w, kWinPrevBundle);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // v0.6.16: 关闭浮窗 → 回桌面（SpringBoard 主屏）——pv 已隐藏（无残留），激活桌面
+            // 让主屏正常显示（v0.6.15 前台 app 探测失败 prevB 为空 → 黑屏；桌面不依赖探测）。
+            // 依次尝试：LS 激活 SpringBoard → 模拟 Home 键；任一成功即停。
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 @try {
                     // presenter 重激活（让 SB 尝试接管；pv 保持隐藏，无残留风险）
                     poc_reactivate_presenter(pv);
-                    // 激活回主屏 app
-                    if (prevB.length) {
-                        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                            @try {
-                                id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
-                                BOOL ok = NO;
-                                if (ws) ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:prevB];
-                                dispatch_async(dispatch_get_main_queue(), ^{
-                                    poc_log(@"UNADOPT_BACK_HOME prev=%@ ok=%d", prevB, ok);
-                                });
-                            } @catch (NSException *e) {
-                                poc_log(@"UNADOPT_BACK_EXC %@", e.name);
-                            }
-                        });
-                    }
                 } @catch (NSException *e) {
                     poc_log(@"UNADOPT_REACT_EXC %@", e.name);
                 }
+                // 回桌面
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    @try {
+                        // a) LS 激活 SpringBoard
+                        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+                        if (ws) {
+                            BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:@"com.apple.springboard"];
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                poc_log(@"GO_HOME_LS ok=%d", ok);
+                            });
+                            if (ok) return;
+                        }
+                    } @catch (NSException *e) { poc_log(@"GO_HOME_LS_EXC %@", e.name); }
+                    @try {
+                        // b) 模拟 Home 键（SB 私有，探针）
+                        [[UIApplication sharedApplication] sendAction:@selector(_simulateHomeButtonPress) to:nil from:nil forEvent:nil];
+                        dispatch_async(dispatch_get_main_queue(), ^{ poc_log(@"GO_HOME_SIM sent"); });
+                    } @catch (NSException *e) { poc_log(@"GO_HOME_SIM_EXC %@", e.name); }
+                });
             });
         }
         win_set(w, kWinAdopted, nil);
@@ -3953,7 +3959,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.15 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.16 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
