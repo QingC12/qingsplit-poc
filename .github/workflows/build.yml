@@ -706,6 +706,7 @@ jobs:
                       class_addMethod(tvc, @selector(numberOfSectionsInTableView:), (IMP)qs_t_numSec, "l@:@");
                       class_addMethod(tvc, @selector(tableView:numberOfRowsInSection:), (IMP)qs_t_numRows, "l@:@@");
                       class_addMethod(tvc, @selector(tableView:cellForRowAtIndexPath:), (IMP)qs_t_cell, "@@:@@");
+                      class_addMethod(tvc, @selector(qs_t_sw_changed:), (IMP)qs_t_sw_changed, "v@:@");   // v0.4.92: 开关 action 必须注册，否则 unrecognized selector 崩溃
                       objc_registerClassPair(tvc);
                       qs_log(@"CLASS_REGISTERED QSTargetsListController\n");
                   }
@@ -757,5 +758,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.91_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.92_iphoneos-arm64e.deb
           if-no-files-found: warn
