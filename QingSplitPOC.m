@@ -1493,6 +1493,12 @@ static UIWindow *g_win = nil;
 // v0.5.0: 多浮窗 —— 全部活动浮窗窗口（UIWindow*）；g_win 等全局 = 最近激活窗口快捷引用
 static NSMutableArray *g_wins = nil;
 #define QS_MAX_WINDOWS 3
+// v0.6.1: presenter 接管候选 —— presenter 创建后 presentationView 可能延迟出现，
+// KEEP 循环每 tick 检查，就绪后用系统管理的 view 替换 legacy hostView（消除远程 layer 残影）
+static id g_presenterCandidate = nil;       // 已创建的 presenter（待 presentationView）
+static NSString *g_presenterCandidateSid = nil;
+static NSTimeInterval g_presenterCandidateAt = 0;
+
 static const void *kWinContainer = &kWinContainer;
 static const void *kWinHostView = &kWinHostView;
 static const void *kWinSid = &kWinSid;
@@ -1753,12 +1759,6 @@ static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene
 static BOOL g_triggerArmed = NO;
 static const char *g_targetSid = NULL;   // v0.4.39: RENDER_FAIL 诊断（最近目标 scene id）
 static NSInteger g_targetLc = -1;        // v0.4.39: RENDER_FAIL 诊断（最近 layerCount）
-// v0.6.1: presenter 接管候选 —— presenter 创建后 presentationView 可能延迟出现，
-// KEEP 循环每 tick 检查，就绪后用系统管理的 view 替换 legacy hostView（消除远程 layer 残影）
-static id g_presenterCandidate = nil;       // 已创建的 presenter（待 presentationView）
-static NSString *g_presenterCandidateSid = nil;
-static NSTimeInterval g_presenterCandidateAt = 0;
-
 static BOOL g_launchPending = NO;        // v0.4.24: 已选择未运行应用 → 启动后等待 scene 出现
 static NSTimeInterval g_launchPendingAt = 0;
 static BOOL g_sceneActivationUsed = NO;          // v0.4.30: 本次选择器是否已走系统级 scene 激活（UIWindowSceneActivationConfiguration）
