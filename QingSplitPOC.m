@@ -1073,6 +1073,9 @@ static const void *kWinSid = &kWinSid;
 static const void *kWinCtx = &kWinCtx;
 static const void *kWinDiag = &kWinDiag;
 static const void *kWinSB = &kWinSB;
+static const void *kWinLastLc = &kWinLastLc;       // v0.5.4: 本窗上次 layer 数（per-window，防多窗共享 static 横跳）
+static const void *kWinPendingCtx = &kWinPendingCtx; // v0.5.4: 候选切换 ctx（去抖）
+static const void *kWinPendingN = &kWinPendingN;     // v0.5.4: 候选连续 tick 数
 static const void *kWinOwner = &kWinOwner;     // container → 所属 UIWindow
 static const void *kWinSidOwner = &kWinSidOwner;  // container → 所属 sid
 static void win_set(UIWindow *w, const void *key, id val) {
@@ -1543,21 +1546,43 @@ static void poc_keep_float(void) {
                 [allLayersInfo addObject:@{@"layer": l, @"ctx": @(c), @"type": t}];
                 if ([t isEqualToString:@"0"]) [type0s addObject:@{@"layer": l, @"ctx": @(c)}];
             }
-            static NSInteger g_lastLc = -1;
-            if (g_lastLc >= 0 && (NSInteger)arr.count != g_lastLc && allLayersInfo.count) {
+            // v0.5.4: g_lastLc 改为 per-window（kWinLastLc）—— 多窗共享 static 会让窗 A 的
+            // lc 变化污染窗 B 的切换判断（v0.5.3 实锤：QQ lc=0 与 stormbreaker lc=2 交替，
+            // 每 tick 都触发 LAYER_SWITCH → HOST_REFRESH 横跳 → 闪烁）
+            NSInteger wLastLc = [win_get(g_win, kWinLastLc) integerValue];
+            if (wLastLc >= 0 && (NSInteger)arr.count != wLastLc && allLayersInfo.count) {
                 NSInteger switchCtx = 0; id switchLayer = nil;
                 for (NSDictionary *d in allLayersInfo) {
                     NSInteger c = [d[@"ctx"] integerValue];
                     if (c != g_lastCtx) { switchLayer = d[@"layer"]; switchCtx = c; break; }
                 }
                 if (switchLayer) {
-                    newLayer = switchLayer; newCtx = switchCtx;
-                    poc_log(@"LAYER_SWITCH lc=%ld→%ld ctx=%ld→%ld", (long)g_lastLc, (long)arr.count, (long)g_lastCtx, (long)newCtx);
+                    // v0.5.4: 去抖 —— 候选 ctx 需连续 2 tick 稳定才切换（防系统层短暂横跳）
+                    NSInteger pendCtx = [win_get(g_win, kWinPendingCtx) integerValue];
+                    NSInteger pendN = [win_get(g_win, kWinPendingN) integerValue];
+                    if (pendCtx == switchCtx) {
+                        pendN += 1;
+                        win_set(g_win, kWinPendingN, @(pendN));
+                        if (pendN >= 2) {
+                            newLayer = switchLayer; newCtx = switchCtx;
+                            poc_log(@"LAYER_SWITCH lc=%ld→%ld ctx=%ld→%ld (debounced)", (long)wLastLc, (long)arr.count, (long)g_lastCtx, (long)newCtx);
+                        }
+                    } else {
+                        win_set(g_win, kWinPendingCtx, @(switchCtx));
+                        win_set(g_win, kWinPendingN, @(1));
+                        poc_log(@"LAYER_PEND ctx=%ld (wait stable)", (long)switchCtx);
+                    }
                 } else {
-                    poc_log(@"LAYER_SWITCH_NONE lc=%ld→%ld (all layers share ctx=%ld)", (long)g_lastLc, (long)arr.count, (long)g_lastCtx);
+                    win_set(g_win, kWinPendingCtx, @(0));
+                    win_set(g_win, kWinPendingN, @(0));
+                    poc_log(@"LAYER_SWITCH_NONE lc=%ld→%ld (all layers share ctx=%ld)", (long)wLastLc, (long)arr.count, (long)g_lastCtx);
                 }
+            } else {
+                // v0.5.4: lc 未变 → 清候选（避免旧候选在 lc 变化后误切换）
+                win_set(g_win, kWinPendingCtx, @(0));
+                win_set(g_win, kWinPendingN, @(0));
             }
-            g_lastLc = arr.count;
+            win_set(g_win, kWinLastLc, @((NSInteger)arr.count));
             // v0.3.10 修复：非切换路径优先保持当前 host 的 ctx（防止 lc 不变时又切回第一个 layer → 来回抖动/白屏闪烁）
             // v0.3.9 实锤：切换后 lc 仍=2，下次 KEEP 取 arr.firstObject（旧层）→ HOST_REFRESH 切回 → 抖动
             if (!newLayer) {
@@ -1600,9 +1625,9 @@ static void poc_keep_float(void) {
             }
             if (kn.width <= 0) { kn = [[UIScreen mainScreen] bounds].size; ksrc = @"screen"; }
             // v0.3.7: lc 变化时打全 layer 明细（type/ctx），追踪页面切换
-            static NSInteger g_diagLc = -1;
-            if (g_diagLc != lc) {
-                g_diagLc = lc;
+            NSInteger wDiagLc = [win_get(g_win, kWinLastLc) integerValue];
+            if (wDiagLc != lc) {
+                win_set(g_win, kWinLastLc, @(lc));
                 @try {
                     id lm3 = poc_tryKVC(targetScene, @[@"layerManager", @"_layerManager"]);
                     id layers3 = poc_tryKVC(lm3, @[@"layers", @"_layers", @"sceneLayers"]);
@@ -1633,7 +1658,10 @@ static void poc_keep_float(void) {
         // SCREEN_HIDE 只在首次建窗时执行一次，lc=0 恢复显示后（SCREEN_SHOW_RESTORE）需重新隐藏
         // poc_screen_hide 幂等（g_sbContainer 非 nil 自动跳过；找不到只日志），每 3s 调用安全
         // v0.4.0: 主屏回退开关（设置）
-        if (g_lastSid && newCtx > 0 && g_sbContainer == nil && poc_setting_bool(@"screenHide", YES)) {
+        // v0.5.4: 多窗（>=2）时不 hide —— hide 会让 scene 失活、系统回收其 layer（v0.5.3 实锤：
+        // 开第 2 窗后第 1 窗 app lc=0 黑屏）。单窗时保留主屏回退原行为
+        if (g_lastSid && newCtx > 0 && g_sbContainer == nil && g_wins.count <= 1
+            && poc_setting_bool(@"screenHide", YES)) {
             poc_screen_hide(g_lastSid);
         }
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
@@ -1995,7 +2023,8 @@ static void poc_try_float(void) {
     // v0.4.0: 主屏回退开关（设置）
     // v0.4.36: 延迟 0.8s 再隐藏 —— 先让 host 内容渲染稳定（layer 刚挂载时 context 可能空窗，
     // 立即隐藏 SB 呈现会让浮窗只显示手势指示、无内容）
-    if (poc_setting_bool(@"screenHide", YES)) {
+    // v0.5.4: 多窗（>=2）时不 hide（保 scene 活跃，防 layer 回收黑屏）
+    if (g_wins.count <= 1 && poc_setting_bool(@"screenHide", YES)) {
         // v0.5.0: 多浮窗 —— 闭包捕获本窗口，操作其关联的 SB 容器，隐藏后写回并恢复活跃引用
         UIWindow *wRef = g_win;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -2904,7 +2933,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.3 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.4 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
