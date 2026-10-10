@@ -883,6 +883,8 @@ static id ctr_get(id c, const void *key);
 static void poc_close_window(UIWindow *w);
 static void poc_unadopt_window(UIWindow *w);   // v0.6.5: 前向声明（close_window 定义早于实现）
 static UIView *poc_find_sb_container(NSString *sid);   // v0.6.8: unadopt 重找当前容器需要
+static NSArray *poc_all_scenes(void);   // v0.6.12: unadopt 重取 scene 需要
+static NSString *poc_scene_id(id scene);   // v0.6.12: 同上
 static void poc_save_float_state_for(NSString *sid, CGRect f);
 static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声明（onPan 拖到底→主屏打开早于定义）
 static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
