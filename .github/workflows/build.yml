@@ -398,31 +398,41 @@ jobs:
           }
           // v0.4.88: 自绘子页 cell（图标+名称+UISwitch，完全脱离 Settings spec 渲染）
           static id qs_t_cell(id self, SEL _cmd, id tv, id ip) {
-              long row = (long)[(NSIndexPath*)ip row];
-              NSArray *apps = qs_apps_cache();
-              if (row >= (long)[apps count]) return [[UITableViewCell alloc] init];
-              NSDictionary *app = apps[row];
-              NSString *bid = app[@"bundle"];
-              NSString *key = [@"target_" stringByAppendingString:bid];
-              UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"qsc"];
-              if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"qsc"];
-              c.textLabel.text = app[@"name"];
-              c.textLabel.font = [UIFont systemFontOfSize:16];
-              c.imageView.image = [UIImage performSelector:NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:") withObject:bid];
-              if (!c.imageView.image) c.imageView.image = [UIImage systemImageNamed:@"app"];
-              UISwitch *sw = [[UISwitch alloc] init];
-              sw.tag = (NSInteger)row;
-              BOOL on = NO;
-              CFTypeRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.qingsplit.poc"));
-              if (v) {
-                  if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue((CFBooleanRef)v);
-                  CFRelease(v);
+              @try {
+                  long row = (long)[(NSIndexPath*)ip row];
+                  NSArray *apps = qs_apps_cache();
+                  if (row >= (long)[apps count]) return [[UITableViewCell alloc] init];
+                  NSDictionary *app = apps[row];
+                  NSString *bid = app[@"bundle"];
+                  NSString *key = [@"target_" stringByAppendingString:bid];
+                  UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"qsc"];
+                  if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"qsc"];
+                  c.textLabel.text = app[@"name"];
+                  c.textLabel.font = [UIFont systemFontOfSize:16];
+                  // v0.4.91: 私有图标方法先查存在性，防 unrecognized selector 崩溃
+                  SEL iconSel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:");
+                  UIImage *icon = nil;
+                  if ([UIImage respondsToSelector:iconSel]) icon = [UIImage performSelector:iconSel withObject:bid];
+                  if (!icon) icon = [UIImage systemImageNamed:@"app.fill"];
+                  c.imageView.image = icon;
+                  UISwitch *sw = [[UISwitch alloc] init];
+                  sw.tag = (NSInteger)row;
+                  BOOL on = NO;
+                  CFTypeRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.qingsplit.poc"));
+                  if (v) {
+                      if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue((CFBooleanRef)v);
+                      CFRelease(v);
+                  }
+                  sw.on = on;
+                  [sw addTarget:self action:@selector(qs_t_sw_changed:) forControlEvents:UIControlEventValueChanged];
+                  c.accessoryView = sw;
+                  c.selectionStyle = UITableViewCellSelectionStyleNone;
+                  if (row == 0) qs_log(@"TARGETS_CELL_OK apps=%lu\n", (unsigned long)[apps count]);
+                  return c;
+              } @catch (NSException *e) {
+                  qs_log(@"TARGETS_CELL_EXC %@\n", e.name);
+                  return [[UITableViewCell alloc] init];
               }
-              sw.on = on;
-              [sw addTarget:self action:@selector(qs_t_sw_changed:) forControlEvents:UIControlEventValueChanged];
-              c.accessoryView = sw;
-              c.selectionStyle = UITableViewCellSelectionStyleNone;
-              return c;
           }
           static long qs_t_numRows(id self, SEL _cmd, id tv) {
               return (long)[qs_apps_cache() count];
@@ -434,6 +444,16 @@ jobs:
               self = ((id(*)(id, SEL, NSInteger))class_getMethodImplementation([UITableViewController class], @selector(initWithStyle:)))(self, _cmd, 1);
               [self setTitle:@"目标应用"];
               return self;
+          }
+          // v0.4.91: 子页渲染生命周期探针（定位 push 后崩溃阶段）
+          static void qs_t2_loadView(id self, SEL _cmd) {
+              qs_log(@"TARGETS_LOADVIEW2\n");
+              ((void(*)(id, SEL))class_getMethodImplementation([UITableViewController class], NSSelectorFromString(@"loadView")))(self, _cmd);
+          }
+          static void qs_t2_viewDidLoad(id self, SEL _cmd) {
+              qs_log(@"TARGETS_VIEWDIDLOAD2\n");
+              ((void(*)(id, SEL))class_getMethodImplementation([UITableViewController class], NSSelectorFromString(@"viewDidLoad")))(self, _cmd);
+              qs_log(@"TARGETS_VIEWDIDLOAD2_END\n");
           }
           static IMP qs_orig_didSelect = NULL;
           static void qs_open_targets(id self, SEL _cmd, id spec);   // v0.4.89: 前向声明
@@ -681,6 +701,8 @@ jobs:
                   Class tvc = objc_allocateClassPair([UITableViewController class], "QSTargetsListController", 0);
                   if (tvc) {
                       class_addMethod(tvc, @selector(initWithStyle:), (IMP)qs_t_init_style, "@@:i");
+                      class_addMethod(tvc, NSSelectorFromString(@"loadView"), (IMP)qs_t2_loadView, "v@:");
+                      class_addMethod(tvc, NSSelectorFromString(@"viewDidLoad"), (IMP)qs_t2_viewDidLoad, "v@:");
                       class_addMethod(tvc, @selector(numberOfSectionsInTableView:), (IMP)qs_t_numSec, "l@:@");
                       class_addMethod(tvc, @selector(tableView:numberOfRowsInSection:), (IMP)qs_t_numRows, "l@:@@");
                       class_addMethod(tvc, @selector(tableView:cellForRowAtIndexPath:), (IMP)qs_t_cell, "@@:@@");
@@ -735,5 +757,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.90_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.91_iphoneos-arm64e.deb
           if-no-files-found: warn
