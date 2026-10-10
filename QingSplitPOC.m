@@ -110,6 +110,14 @@ static BOOL poc_msgSend_setActivePrioritizedPresenter(id owner, id presenter) {
 @interface QSFloatingWindow : UIWindow
 @end
 @implementation QSFloatingWindow
+// v0.5.0: 多浮窗 —— 浮窗全屏窗口不拦截右缘触发条区域（strip 21.5pt）：
+// 触摸点落在右缘 → 返回 nil，触摸穿透到触发条窗口（level 998），选择器可反复弹出
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = [super hitTest:point withEvent:event];
+    if (!h) return nil;
+    if (point.x > self.bounds.size.width - 26.0) return nil;   // 右缘触发条放行
+    return h;
+}
 @end
 
 // ----------------------------------------------------------------------------
@@ -1358,6 +1366,7 @@ static void poc_screen_restore(void) {
 static void poc_close_window(UIWindow *w) {
     @try {
         if (!w) return;
+        if (g_wins && ![g_wins containsObject:w]) return;   // v0.5.0: 已关闭窗口防重复处理
         // 把全局快捷引用指向要关闭的窗口（复用原关闭逻辑）
         if (w != g_win) {
             g_win = w;
@@ -2481,7 +2490,7 @@ static void poc_picker_show(void) {
 static void poc_setup_edge_trigger(void) {
     @try {
         g_triggerWin = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-        g_triggerWin.windowLevel = 998.0;   // 低于浮窗 999.0（浮窗激活时窗口隐藏）
+        g_triggerWin.windowLevel = 1000.0;   // v0.5.0: 高于浮窗 999.0 —— 浮窗 hitTest 放行右缘后由触发条接收（多开入口）
         g_triggerWin.userInteractionEnabled = YES;
         @try {
             Class wsc = NSClassFromString(@"UIWindowScene");
@@ -2496,9 +2505,12 @@ static void poc_setup_edge_trigger(void) {
             if (use) [g_triggerWin setValue:use forKey:@"windowScene"];
         } @catch (NSException *e) { }
         UIViewController *vc = [[UIViewController alloc] init];
+        vc.view = [[POCView alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
         vc.view.backgroundColor = [UIColor clearColor];
         g_triggerWin.rootViewController = vc;
         g_pickerVC = vc;
+        // v0.5.0: 触发条窗口 rootVC.view = POCView —— 空白区域 hitTest 返回 nil 穿透，
+        // 不拦截主屏/浮窗交互；仅 strip/指引/backdrop 子视图响应（右缘滑动触发选择器）
         // v0.4.75: 右缘触发区 —— 透明，占屏幕右侧 5% 竖条（全高），不干扰主屏视觉
         CGRect sb = [[UIScreen mainScreen] bounds];
         UIView *strip = [[UIView alloc] initWithFrame:CGRectMake(sb.size.width * 0.95, 0, sb.size.width * 0.05, sb.size.height)];
@@ -2804,7 +2816,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.0 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.1 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
