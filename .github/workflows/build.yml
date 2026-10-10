@@ -511,12 +511,12 @@ jobs:
           // 子页仅含 PSSwitchCell（渲染安全，主页 79 开关已验证）；不再平铺 79 开关，实现真正的父目录
           static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
               @try {
-                  NSDictionary *entry = @{@"cell":@"PSTableCell", @"label":@"目标应用", @"key":@"targets_entry"};
+                  // v0.4.90: PSLinkCell（cellType=2，渲染已验证正常）+ didSelect 拦截手动 push；无 detail 不触发 Settings push
+                  NSDictionary *entry = @{@"cell":@"PSLinkCell", @"label":@"目标应用", @"key":@"targets_entry"};
                   id es = qs_mk_spec(PS, self, entry);
                   if (!es) { qs_log(@"TARGETS_ENTRY_FAIL\n"); return; }
-                  // v0.4.88: 点击由 didSelect swizzle 拦截（identifier=qs_targets_entry），手动 push 自绘子页
-                  // 插入到"目标应用"组头（index 2）之后
-                  NSUInteger ins = 3;
+                  // 插入到"启用悬浮窗"（index 1）之后
+                  NSUInteger ins = 2;
                   if ((NSUInteger)[arr count] < ins) ins = (NSUInteger)[arr count];
                   [arr insertObject:es atIndex:ins];
                   qs_log(@"TARGETS_ENTRY_INSERTED at=%lu\n", (unsigned long)ins);
@@ -735,5 +735,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.89_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.90_iphoneos-arm64e.deb
           if-no-files-found: warn
