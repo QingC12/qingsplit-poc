@@ -1362,6 +1362,18 @@ static void poc_screen_restore(void) {
 //   - 只改自己创建的 UIWindow/视图的 hidden/引用；不动 SB 状态、不动 FBScene、不动 layerManager
 //   - g_win 置 nil 后 poc_try_float 下一 tick 重新建窗 → "关闭后重新打开仍能 HOST_REFRESH"
 //   - 主屏回退恢复（露出桌面）；scene 的 layer 保持系统管理，原 app 仍在
+// v0.5.2: 锁屏/失活兜底 —— 关闭所有浮窗并恢复各 app 主屏呈现（防止窗口残留导致主屏无法操作）
+static void poc_close_all_windows(void) {
+    @try {
+        NSUInteger n = g_wins.count;
+        for (UIWindow *w in [g_wins copy]) {
+            poc_close_window(w);
+        }
+        if (n) poc_log(@"CLOSE_ALL_WINDOWS total=%lu — safety net", (unsigned long)n);
+    } @catch (NSException *e) {
+        poc_log(@"CLOSE_ALL_EXC %@", e.name);
+    }
+}
 // v0.5.0: 关闭指定浮窗（多窗口）—— 只移除该窗口 UI，不动 Scene；从 g_wins 移除并更新活跃引用
 static void poc_close_window(UIWindow *w) {
     @try {
@@ -2301,6 +2313,23 @@ static void poc_picker_select(NSDictionary *app) {
         }
     } @catch (NSException *e) { }
     NSString *sid = app[@"sid"];
+    // v0.5.2: 同 app 去重 —— 已有该 app 浮窗则不再重复建窗（同 scene 双 host 会冲突：
+    // 同一 CAContext 被两窗引用 → 手势失效 + SB 呈现错乱），聚焦已有窗即可
+    if (g_wins.count) {
+        for (UIWindow *w in [g_wins copy]) {
+            NSString *wsid = win_get(w, kWinSid);
+            if (wsid && [wsid isEqualToString:sid]) {
+                poc_log(@"PICKER_DUP sid=%@ — window exists, focus it", sid);
+                g_win = w;
+                [w makeKeyAndVisible];
+                g_manualSid = [sid copy];
+                g_triggerArmed = NO;
+                g_launchPending = NO;
+                poc_picker_hide();
+                return;
+            }
+        }
+    }
     g_manualSid = [sid copy];
     g_triggerArmed = YES;
     if ([app[@"running"] boolValue]) {
@@ -2545,6 +2574,28 @@ static void poc_setup_edge_trigger(void) {
         poc_log(@"EDGE_TRIGGER armed strip=%@", NSStringFromCGRect(strip.frame));
     } @catch (NSException *e) {
         poc_log(@"EDGE_TRIGGER_EXC %@", e.name);
+    }
+    // v0.5.2: 锁屏兜底 —— SpringBoard 失活/进入后台（锁屏）→ 关闭所有浮窗并恢复主屏
+    @try {
+        [[NSNotificationCenter defaultCenter] removeObserver:[POCBootstrap class]];
+        [[NSNotificationCenter defaultCenter] addObserver:[POCBootstrap class]
+                                                 selector:@selector(poc_app_inactive:)
+                                                     name:UIApplicationWillResignActiveNotification
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:[POCBootstrap class]
+                                                 selector:@selector(poc_app_inactive:)
+                                                     name:UIApplicationDidEnterBackgroundNotification
+                                                   object:nil];
+        poc_log(@"SAFETY_NET armed resign+background");
+    } @catch (NSException *e) {
+        poc_log(@"SAFETY_NET_EXC %@", e.name);
+    }
+}
+// v0.5.2: 锁屏/失活处理 —— 兜底关闭所有浮窗（窗口残留会拦截主屏触摸）
++ (void)poc_app_inactive:(NSNotification *)note {
+    if (g_wins.count) {
+        poc_log(@"LOCK_OR_INACTIVE note=%@ wins=%lu → close all", note.name, (unsigned long)g_wins.count);
+        poc_close_all_windows();
     }
 }
 
@@ -2816,7 +2867,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.1 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.2 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
