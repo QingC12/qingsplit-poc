@@ -2486,7 +2486,8 @@ static void poc_keep_float(void) {
         // v0.5.4: 多窗（>=2）时不 hide —— hide 会让 scene 失活、系统回收其 layer（v0.5.3 实锤：
         // 开第 2 窗后第 1 窗 app lc=0 黑屏）。单窗时保留主屏回退原行为
         if (g_lastSid && newCtx > 0 && g_sbContainer == nil && g_wins.count <= 1
-            && poc_setting_bool(@"screenHide", YES)) {
+            && poc_setting_bool(@"screenHide", YES)
+            && !win_get(g_win, kWinAdopted)) {   // v0.6.4: ADOPT 接管后不再 hide
             poc_screen_hide(g_lastSid);
         }
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
@@ -2901,6 +2902,9 @@ static void poc_try_float(void) {
         UIWindow *wRef = g_win;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (![g_wins containsObject:wRef]) return;
+            // v0.6.4: presenter 接管后跳过 SCREEN_HIDE —— ADOPT 已把 presentationView 挪进浮窗，
+            // 此时再 hide 会把刚接管的 view 隐藏（浮窗窗口也在 windows 树，search 会重新命中）
+            if (win_get(wRef, kWinAdopted)) return;
             g_win = wRef;
             g_sbContainer = win_get(wRef, kWinSB);
             poc_screen_hide(sid);
