@@ -1974,6 +1974,18 @@ static void poc_try_float(void) {
                                    (g_win.bounds.size.height - ch) / 2.0,
                                    cw, ch);
         if (memFrame.size.width > 0 && memFrame.size.height > 0) cframe = memFrame;
+        // v0.5.5: 多窗无记忆时位置错开 —— 多窗默认都居中会完全重叠，顶层窗盖住下层
+        // 导致下层手势/内容无法操作（v0.5.4 实锤）。按已有窗数向右下偏移，保证每窗可见可操作
+        if (memFrame.size.width <= 0 && memFrame.size.height <= 0 && g_wins.count > 0) {
+            NSUInteger idx = g_wins.count - 1;   // 已有窗数（新窗将加入后成为第 idx+1 个）
+            CGFloat ox = MIN((CGFloat)idx * 36.0, 108.0);
+            CGFloat oy = MIN((CGFloat)idx * 52.0, 156.0);
+            cframe = CGRectOffset(cframe, ox, oy);
+            cframe.origin.x = MIN(cframe.origin.x, g_win.bounds.size.width - 60.0);
+            cframe.origin.y = MIN(cframe.origin.y, g_win.bounds.size.height - 120.0);
+            poc_log(@"WINDOW_OFFSET idx=%lu ox=%.0f oy=%.0f frame=%@", (unsigned long)idx, ox, oy,
+                    NSStringFromCGRect(cframe));
+        }
         QSFloatContainer *container = [[QSFloatContainer alloc] initWithFrame:cframe];
         container.nativeContentSize = native;
         container.contentView = hv;   // layoutSubviews 安排 14px 内边距 + contain 等比
@@ -2933,7 +2945,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.4 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.5 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
