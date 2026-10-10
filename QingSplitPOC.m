@@ -2224,6 +2224,7 @@ static void poc_unadopt_window(UIWindow *w) {
                 if (wsid.length) target = poc_find_sb_container(wsid);   // 跳过浮窗树内被接管 view
                 if (target) poc_log(@"UNADOPT_RESEARCH sid=%@ newFrom=%@", wsid, poc_cls(target));
             }
+            CGRect full = [[UIScreen mainScreen] bounds];
             if (target && pv.superview != target) {
                 [pv removeFromSuperview];
                 @try {
@@ -2233,16 +2234,15 @@ static void poc_unadopt_window(UIWindow *w) {
                     } else {
                         [target addSubview:pv];
                     }
-                    // v0.6.7: 放回后恢复全屏布局（接管时被改成浮窗尺寸 → 主屏左上角小窗）
-                    pv.frame = target.bounds;
-                    pv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                    [target setNeedsLayout];
-                    [target layoutIfNeeded];
+                    // v0.6.11: 放回时先隐藏（防左上角闪烁），frame 设屏幕全屏（不再强改容器布局，
+                    // 由 presenter 激活后系统接管布局为全屏）
+                    pv.hidden = YES;
+                    pv.frame = full;
                     putBack = YES;
-                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@ frame=%@", win_get(w, kWinSid), poc_cls(target), NSStringFromCGRect(target.bounds));
+                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@ hiddenUntilReact", win_get(w, kWinSid), poc_cls(target));
                 } @catch (NSException *e) {
                     [target addSubview:pv];
-                    pv.frame = target.bounds;
+                    pv.frame = full;
                     putBack = YES;
                     poc_log(@"UNADOPT_INSERT_EXC %@ → addSubview", e.name);
                 }
@@ -2256,36 +2256,25 @@ static void poc_unadopt_window(UIWindow *w) {
                 if (root && pv.superview != root) {
                     [pv removeFromSuperview];
                     [root addSubview:pv];
+                    pv.hidden = YES;
+                    pv.frame = full;
                     putBack = YES;
-                    poc_log(@"UNADOPT_FALLBACK sid=%@ → SBRootSceneWindow", win_get(w, kWinSid));
+                    poc_log(@"UNADOPT_FALLBACK sid=%@ → SBRootSceneWindow hiddenUntilReact", win_get(w, kWinSid));
                 }
             }
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
-            // v0.6.8: 放回后重新激活 presenter —— 系统恢复呈现布局为全屏（核心修复）
-            poc_reactivate_presenter(pv);
-            // v0.6.10: 延迟 LS 激活 app 到前台 —— 系统重建全屏呈现（不依赖 scene 对象，更可靠）
-            NSString *bid = win_get(w, kWinBundle);
-            if (!bid.length) {
-                NSString *wsid2 = win_get(w, kWinSid);
-                if ([wsid2 hasPrefix:@"sceneID:"]) {
-                    bid = [wsid2 substringFromIndex:@"sceneID:".length];
-                    NSRange dash = [bid rangeOfString:@"-" options:NSBackwardsSearch];
-                    if (dash.location != NSNotFound) bid = [bid substringToIndex:dash.location];
+            // v0.6.11: presenter 重激活延迟执行（不在 close 主流程同步触发，避免阻塞主队列
+            // 导致后续 dispatch 延迟 10s；0.15s 后 REACT + 显示 pv —— 系统接管布局为全屏）
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                @try {
+                    poc_reactivate_presenter(pv);
+                    pv.hidden = NO;
+                    [pv.superview setNeedsLayout];
+                } @catch (NSException *e) {
+                    poc_log(@"UNADOPT_REACT_EXC %@", e.name);
+                    pv.hidden = NO;
                 }
-            }
-            NSString *finalBid = bid;
-            if (finalBid.length) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    @try {
-                        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
-                        BOOL ok = NO;
-                        if (ws) ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:finalBid];
-                        poc_log(@"UNADOPT_LS_ACTIVATE sid=%@ ok=%d", finalBid, ok);
-                    } @catch (NSException *e) {
-                        poc_log(@"UNADOPT_LS_EXC %@", e.name);
-                    }
-                });
-            }
+            });
         }
         win_set(w, kWinAdopted, nil);
         win_set(w, kWinAdoptedFrom, nil);
@@ -3955,7 +3944,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.16 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.11 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
