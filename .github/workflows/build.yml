@@ -355,6 +355,99 @@ jobs:
               } @catch (NSException *e) { qs_log(@"BUILD_DUMP_EXC %@\n", e.name); }
               return spec;
           }
+          // v0.4.88: 公共应用枚举（子页列表 + 勾选共用）
+          static NSArray *qs_enumerate_apps(void) {
+              NSMutableArray *out_ = [NSMutableArray array];
+              @try {
+                  Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+                  if (wsCls) {
+                      id ws = [wsCls performSelector:@selector(defaultWorkspace)];
+                      NSArray *apps = [ws performSelector:@selector(allApplications)];
+                      for (id proxy in apps) {
+                          NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
+                          NSString *name = [proxy performSelector:@selector(localizedName)];
+                          if (!bid.length || !name.length) continue;
+                          if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
+                          [out_ addObject:@{@"name":name, @"bundle":bid}];
+                      }
+                  }
+              } @catch (NSException *e) { qs_log(@"APPS_EXC %@\n", e.name); }
+              // 按名称排序，选择器与设置一致
+              [out_ sortUsingComparator:^NSComparisonResult(id a, id b){
+                  return [a[@"name"] localizedCaseInsensitiveCompare:b[@"name"]];
+              }];
+              return out_;
+          }
+          // v0.4.88: 子页开关变化 → 写 CFPreferences（与 SpringBoard 同一域）
+          static void qs_t_sw_changed(id self, SEL _cmd, id sw) {
+              long idx = [(UIView*)sw tag];
+              NSArray *apps = qs_apps_cache();
+              if (idx < 0 || idx >= (long)[apps count]) return;
+              NSString *bid = apps[idx][@"bundle"];
+              NSString *key = [@"target_" stringByAppendingString:bid];
+              BOOL on = [(UISwitch*)sw isOn];
+              CFPreferencesSetAppValue((__bridge CFStringRef)key, on ? kCFBooleanTrue : kCFBooleanFalse, CFSTR("com.qingsplit.poc"));
+              CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
+              qs_log(@"TARGET_SW key=%@ on=%d\n", key, on);
+          }
+          static NSArray *qs_apps_cache(void) {
+              static NSArray *cache = nil;
+              if (!cache) cache = qs_enumerate_apps();
+              return cache;
+          }
+          // v0.4.88: 自绘子页 cell（图标+名称+UISwitch，完全脱离 Settings spec 渲染）
+          static id qs_t_cell(id self, SEL _cmd, id tv, id ip) {
+              long row = (long)[(NSIndexPath*)ip row];
+              NSArray *apps = qs_apps_cache();
+              if (row >= (long)[apps count]) return [[UITableViewCell alloc] init];
+              NSDictionary *app = apps[row];
+              NSString *bid = app[@"bundle"];
+              NSString *key = [@"target_" stringByAppendingString:bid];
+              UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"qsc"];
+              if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"qsc"];
+              c.textLabel.text = app[@"name"];
+              c.textLabel.font = [UIFont systemFontOfSize:16];
+              c.imageView.image = [UIImage performSelector:NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:") withObject:bid];
+              if (!c.imageView.image) c.imageView.image = [UIImage systemImageNamed:@"app"];
+              UISwitch *sw = [[UISwitch alloc] init];
+              sw.tag = (NSInteger)row;
+              BOOL on = NO;
+              CFTypeRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)key, CFSTR("com.qingsplit.poc"));
+              if (v) {
+                  if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue((CFBooleanRef)v);
+                  CFRelease(v);
+              }
+              sw.on = on;
+              [sw addTarget:self action:@selector(qs_t_sw_changed:) forControlEvents:UIControlEventValueChanged];
+              c.accessoryView = sw;
+              c.selectionStyle = UITableViewCellSelectionStyleNone;
+              return c;
+          }
+          static long qs_t_numRows(id self, SEL _cmd, id tv) {
+              return (long)[qs_apps_cache() count];
+          }
+          static long qs_t_numSec(id self, SEL _cmd, id tv) { return 1; }
+          // v0.4.88: 子页初始化（标题 + 分组表格）
+          static id qs_t_init_style(id self, SEL _cmd, NSInteger style) {
+              qs_log(@"TARGETS_VC_INIT\n");
+              self = ((id(*)(id, SEL, NSInteger))class_getMethodImplementation([UITableViewController class], @selector(initWithStyle:)))(self, _cmd, 1);
+              [self setTitle:@"目标应用"];
+              return self;
+          }
+          // v0.4.88: 主页入口 action —— 手动 push 自绘子页（绕开 Settings detail-push）
+          static void qs_open_targets(id self, SEL _cmd, id spec) {
+              qs_log(@"OPEN_TARGETS\n");
+              Class tc = NSClassFromString(@"QSTargetsListController");
+              if (!tc) { qs_log(@"OPEN_TARGETS_NOCLASS\n"); return; }
+              id vc = [[tc alloc] initWithStyle:1];
+              UINavigationController *nc = (UINavigationController *)[self valueForKey:@"navigationController"];
+              if (nc && vc) {
+                  [nc pushViewController:vc animated:YES];
+                  qs_log(@"OPEN_TARGETS_PUSHED\n");
+              } else {
+                  qs_log(@"OPEN_TARGETS_PUSH_FAIL nc=%@ vc=%@\n", nc, vc);
+              }
+          }
           // v0.4.87: 子页生命周期探针 —— 定位 push 崩溃发生在 init/loadView/viewDidLoad/specifiers 哪一步
           static id qs_t_init(id self, SEL _cmd) {
               qs_log(@"TARGETS_INIT_BEGIN\n");
@@ -381,23 +474,14 @@ jobs:
                   NSDictionary *g = @{@"cell":@"PSGroupCell", @"footerText":@"开启的应用会出现在右侧滑动选择器中，可作为悬浮窗目标"};
                   id gs = qs_mk_spec(PS, self, g);
                   if (gs) [arr addObject:gs];
-                  Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-                  qs_log(@"TARGETS_WS %@\n", wsCls ? @"FOUND" : @"MISSING");
-                  if (wsCls) {
-                      id ws = [wsCls performSelector:@selector(defaultWorkspace)];
-                      NSArray *apps = [ws performSelector:@selector(allApplications)];
-                      qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
-                      for (id proxy in apps) {
-                          NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
-                          NSString *name = [proxy performSelector:@selector(localizedName)];
-                          if (!bid.length || !name.length) continue;
-                          if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
-                          NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":name,
-                                              @"key":[@"target_" stringByAppendingString:bid],
-                                              @"defaults":@"com.qingsplit.poc"};
-                          id spec = qs_mk_spec(PS, self, d);
-                          if (spec) [arr addObject:spec];
-                      }
+                  NSArray *apps = qs_enumerate_apps();
+                  qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
+                  for (NSDictionary *app in apps) {
+                      NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":app[@"name"],
+                                          @"key":[@"target_" stringByAppendingString:app[@"bundle"]],
+                                          @"defaults":@"com.qingsplit.poc"};
+                      id spec = qs_mk_spec(PS, self, d);
+                      if (spec) [arr addObject:spec];
                   }
               } @catch (NSException *e) {
                   qs_log(@"TARGETS_EXC %@\n", e.name);
@@ -410,10 +494,12 @@ jobs:
           // 子页仅含 PSSwitchCell（渲染安全，主页 79 开关已验证）；不再平铺 79 开关，实现真正的父目录
           static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
               @try {
-                  NSDictionary *entry = @{@"cell":@"PSLinkCell", @"label":@"目标应用",
-                                          @"detail":@"QSTargetsController", @"isController":@YES};
+                  NSDictionary *entry = @{@"cell":@"PSButtonCell", @"label":@"目标应用"};
                   id es = qs_mk_spec(PS, self, entry);
                   if (!es) { qs_log(@"TARGETS_ENTRY_FAIL\n"); return; }
+                  // v0.4.88: action 手动 push 自绘子页（PSButtonCell 不触发 Settings detail-push 崩溃路径）
+                  @try { [es setTarget:self action:@selector(qs_open_targets:)]; }
+                  @catch (NSException *e) { qs_log(@"TARGETS_ACTION_EXC %@\n", e.name); }
                   // 插入到"目标应用"组头（index 2）之后
                   NSUInteger ins = 3;
                   if ((NSUInteger)[arr count] < ins) ins = (NSUInteger)[arr count];
@@ -567,15 +653,20 @@ jobs:
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
                   objc_registerClassPair(sub);
                   qs_log(@"CLASS_REGISTERED QingSplitPrefsRootListController\n");
-                  // v0.4.85: 目标应用子页 controller（仅 PSSwitchCell，绕开 link/detail 渲染崩溃）
-                  Class sub2 = objc_allocateClassPair(ps, "QSTargetsController", 0);
-                  if (sub2) {
-                      class_addMethod(sub2, @selector(init), (IMP)qs_t_init, "@@:");
-                      class_addMethod(sub2, NSSelectorFromString(@"loadView"), (IMP)qs_t_loadView, "v@:");
-                      class_addMethod(sub2, NSSelectorFromString(@"viewDidLoad"), (IMP)qs_t_viewDidLoad, "v@:");
-                      class_addMethod(sub2, @selector(specifiers), (IMP)qs_target_specifiers, "@@:");
-                      objc_registerClassPair(sub2);
-                      qs_log(@"CLASS_REGISTERED QSTargetsController\n");
+                  // v0.4.88: 自绘子页（UITableViewController —— 完全脱离 Settings spec 渲染/详情 push 机制）
+                  Class tvc = objc_allocateClassPair([UITableViewController class], "QSTargetsListController", 0);
+                  if (tvc) {
+                      class_addMethod(tvc, @selector(initWithStyle:), (IMP)qs_t_init_style, "@@:i");
+                      class_addMethod(tvc, @selector(numberOfSectionsInTableView:), (IMP)qs_t_numSec, "l@:@");
+                      class_addMethod(tvc, @selector(tableView:numberOfRowsInSection:), (IMP)qs_t_numRows, "l@:@@");
+                      class_addMethod(tvc, @selector(tableView:cellForRowAtIndexPath:), (IMP)qs_t_cell, "@@:@@");
+                      objc_registerClassPair(tvc);
+                      qs_log(@"CLASS_REGISTERED QSTargetsListController\n");
+                  }
+                  // 主页 controller 增加入口 action 方法
+                  Class mainC = NSClassFromString(@"QingSplitPrefsRootListController");
+                  if (mainC) {
+                      class_addMethod(mainC, @selector(qs_open_targets:), (IMP)qs_open_targets, "v@:@");
                   }
               } else {
                   qs_log(@"CLASS_EXISTS\n");
@@ -620,5 +711,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.87_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.88_iphoneos-arm64e.deb
           if-no-files-found: warn
