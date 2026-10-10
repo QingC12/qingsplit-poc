@@ -872,6 +872,14 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     // v0.5.14: 拖动锁 —— 拖动（mode=1）只改 origin、bounds 不变 → 内容随容器整体移动，
     // 跳过 contentWrapper/cv 的 transform 重算（每帧重算 = 远程 layer 重映射 = 残影源）
     if (s_dragLock) return;
+    // v0.5.16: 内容重算节流 ~30fps —— 缩放中 frame 每帧变 → layoutSubviews 每帧执行，
+    // cv transform 每帧重算 + 远程 layer 每帧重映射 = 卡顿（日志实锤 CONTENT_FILL 每帧刷）。
+    // 内容更新节流到 33ms 一次（chrome/把手已在上方更新，保持跟手）；缩放结束重置节流精确重算
+    static NSTimeInterval s_lastFill = 0;
+    NSTimeInterval nowFill = CACurrentMediaTime();
+    if (nowFill - s_lastFill < 0.033 && !s_forceFillNow) return;
+    s_lastFill = nowFill;
+    s_forceFillNow = NO;
     // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
     CGRect inner = CGRectInset(self.bounds, 24, 24);
     // v0.5.6: wrapper 严格限定内容区 → host view 放大几何不覆盖手势带/关闭按钮/把手
@@ -946,6 +954,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 static UITouch *s_mTouch = nil;
 static int s_mMode = 0;          // 0=none 1=drag 2=cornerL 3=cornerR 4=pass
 static BOOL s_dragLock = NO;     // v0.5.14: 拖动锁 —— 拖动中跳过内容 transform 重算（防残影）
+static BOOL s_forceFillNow = NO; // v0.5.16: 缩放结束强制重算内容（跳过节流）
 static CGPoint s_mStart;         // 起点（容器坐标）
 static CGRect  s_mFrame;         // 起始 frame
 static NSTimeInterval s_mT0;     // 起始时间
@@ -958,6 +967,9 @@ static NSTimeInterval s_tapT0 = 0;
         s_mTouch = t; s_mMode = 0; s_mStart = p; s_mFrame = self.frame; s_mT0 = CACurrentMediaTime();
         s_dragLock = NO;
         poc_log(@"BTN_CLOSE_HIT p=(%.0f,%.0f) btn=%@", p.x, p.y, NSStringFromCGRect(_closeBtn.frame));
+        // v0.5.16: 点击即关 —— v0.5.15 实锤：BTN_CLOSE_HIT 触发但 CLOSE_TAP 从未出现
+        // （UIControl touchUpInside 依赖系统完整触摸序列，手动派发路径下不可靠）→ BEGAN 直接关窗
+        [self onCloseTap:nil];
         return;
     }
     s_mTouch = t;
@@ -1006,6 +1018,15 @@ static NSTimeInterval s_tapT0 = 0;
             f.origin.x = s_mFrame.origin.x;   // 左侧锚定
         }
         self.frame = f;
+        // v0.5.16: 缩放节流 —— 远程 layer（_UIContextLayerHostView）每帧重映射导致卡顿（日志实锤：
+        // 缩放中 CONTENT_FILL 每帧刷）。内容更新节流到 ~30fps（33ms），容器 frame 仍每帧跟手，
+        // 内容略微滞后但整体流畅；缩放结束 layoutSubviews 精确重算
+        static NSTimeInterval s_lastCvLayout = 0;
+        NSTimeInterval nowC = CACurrentMediaTime();
+        if (nowC - s_lastCvLayout > 0.033) {
+            s_lastCvLayout = nowC;
+            [self layoutIfNeeded];
+        }
     }
     static NSTimeInterval lastM = 0;
     NSTimeInterval nowM = [[NSProcessInfo processInfo] systemUptime];
@@ -1026,6 +1047,7 @@ static NSTimeInterval s_tapT0 = 0;
         CGRect f = self.frame;
         poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, f);
     } else if (s_mMode == 2 || s_mMode == 3) {
+        s_forceFillNow = YES;    // v0.5.16: 缩放结束强制精确重算内容（跳过节流）
         [self setNeedsLayout];   // v0.5.14: 缩放结束重算内容布局（拖动锁解除后）
     }
     s_dragLock = NO;             // v0.5.14: 解锁
@@ -3489,7 +3511,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.15 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.16 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
