@@ -111,6 +111,25 @@ static BOOL poc_msgSend_setActivePrioritizedPresenter(id owner, id presenter) {
 @interface QSFloatingWindow : UIWindow
 @end
 @implementation QSFloatingWindow
+// v0.5.9: sendEvent 探针 —— v0.5.8 实锤：hitTest 命中容器但 touches/手势从未派发
+// （CTR_TOUCH_BEGAN=0、GEST_BEGIN_CHECK=0）→ 触摸事件流在 window 层被截断。
+// sendEvent 是否调用决定：窗口收没收到事件（没收到 → 系统在窗口外拦截，需 hook SB 手势）
+- (void)sendEvent:(UIEvent *)event {
+    static NSTimeInterval lastSE = 0;
+    NSTimeInterval nowSE = [[NSProcessInfo processInfo] systemUptime];
+    if (nowSE - lastSE > 0.2) {
+        lastSE = nowSE;
+        NSSet *ts = event.allTouches;
+        UITouch *t = [ts anyObject];
+        if (t) {
+            CGPoint p = [t locationInView:self];
+            poc_log(@"WIN_SENDEVENT phase=%ld p=(%.0f,%.0f)", (long)t.phase, p.x, p.y);
+        } else {
+            poc_log(@"WIN_SENDEVENT no-touch");
+        }
+    }
+    [super sendEvent:event];
+}
 // v0.5.0: 多浮窗 —— 浮窗全屏窗口不拦截右缘触发条区域（strip 21.5pt）：
 // 触摸点落在右缘 → 返回 nil，触摸穿透到触发条窗口（level 998），选择器可反复弹出
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
@@ -3048,7 +3067,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.8 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.9 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
