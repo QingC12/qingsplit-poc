@@ -2276,7 +2276,8 @@ static void poc_unadopt_window(UIWindow *w) {
                     // scene 实时重取 + 激活
                     id scene = nil;
                     for (id sc in poc_all_scenes()) {
-                        if ([[poc_scene_id(sc)] isEqualToString:wsidU]) { scene = sc; break; }
+                        NSString *scid = poc_scene_id(sc);
+                        if (scid && [scid isEqualToString:wsidU]) { scene = sc; break; }
                     }
                     if (scene) {
                         SEL sel = sel_registerName("activateWithTransitionContext:");
