@@ -117,6 +117,14 @@ static BOOL poc_msgSend_setActivePrioritizedPresenter(id owner, id presenter) {
     UIView *h = [super hitTest:point withEvent:event];
     if (!h) return nil;
     if (point.x > self.bounds.size.width - 26.0) return nil;   // 右缘触发条放行
+    // v0.5.7 触摸探针：窗口收到触摸 → 记录命中目标（节流）
+    static NSTimeInterval lastHit = 0;
+    NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+    if (now - lastHit > 0.25) {
+        lastHit = now;
+        poc_log(@"WIN_HIT p=(%.0f,%.0f) h=%@", point.x, point.y,
+                h ? NSStringFromClass([h class]) : @"nil");
+    }
     return h;
 }
 @end
@@ -829,7 +837,22 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = [super hitTest:point withEvent:event];
-    if (h == self) return self;   // 边框 → 容器（手势）
+    if (h == self) {
+        static NSTimeInterval lastHit = 0;
+        NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+        if (now - lastHit > 0.25) {
+            lastHit = now;
+            poc_log(@"CTR_HIT_FRAME p=(%.0f,%.0f)", point.x, point.y);
+        }
+        return self;   // 边框 → 容器（手势）
+    }
+    static NSTimeInterval lastHit2 = 0;
+    NSTimeInterval now2 = [[NSProcessInfo processInfo] systemUptime];
+    if (now2 - lastHit2 > 0.5) {
+        lastHit2 = now2;
+        poc_log(@"CTR_HIT_CONTENT p=(%.0f,%.0f) h=%@", point.x, point.y,
+                h ? NSStringFromClass([h class]) : @"nil");
+    }
     return h;                     // 内容 → app
 }
 // v0.5.6: contentWrapper —— 空白区（host 内容未覆盖处）穿透，不拦截下层窗/主屏触摸
@@ -843,6 +866,13 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 //   双指 Pinch 禁用
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gr {
     CGPoint p = [gr locationInView:self];
+    // v0.5.7 触摸探针：手势 begin 判定入口（记录手势类型与起点）
+    static NSTimeInterval lastG = 0;
+    NSTimeInterval nowG = [[NSProcessInfo processInfo] systemUptime];
+    if (nowG - lastG > 0.25) {
+        lastG = nowG;
+        poc_log(@"GEST_BEGIN_CHECK gr=%@ p=(%.0f,%.0f)", NSStringFromClass([gr class]), p.x, p.y);
+    }
     if (gr == _scalePan) {
         // v0.3.15: 角落缩放区 60×60 → 44×44（用户实测角落过于灵敏，缩小）
         CGRect bl = CGRectMake(0, self.bounds.size.height - 44, 44, 44);
@@ -901,6 +931,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     return NO;
 }
 - (void)onLongPress:(UILongPressGestureRecognizer *)g {
+    static NSTimeInterval lastA = 0;
+    NSTimeInterval nowA = [[NSProcessInfo processInfo] systemUptime];
+    if (nowA - lastA > 0.2) { lastA = nowA; poc_log(@"%s st=%ld", @"GEST_LONGPRESS", (long)g.state); }
+
     if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
     if (g.state == UIGestureRecognizerStateBegan) {
         _lpActive = YES;
@@ -963,6 +997,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, rf);
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
+    static NSTimeInterval lastA = 0;
+    NSTimeInterval nowA = [[NSProcessInfo processInfo] systemUptime];
+    if (nowA - lastA > 0.2) { lastA = nowA; poc_log(@"%s st=%ld", @"GEST_PAN", (long)g.state); }
+
     if (g.state == UIGestureRecognizerStateChanged) {
         // v0.4.35: 移除全屏态（拖到底改为"主屏打开"）—— 普通拖动照常
         // v0.4.9: 半屏吸附后拖离 → 还原吸附前浮动尺寸（Stheno medusaFrameLast/finalFrame 精神）
@@ -1050,6 +1088,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 //   朝对角（左下→右上 / 右下→左上）= 缩小；朝外直线（远离角落）= 放大
 //   用 translation 在"内方向"上的投影做指数映射，保持宽高比
 - (void)onScalePan:(UIPanGestureRecognizer *)g {
+    static NSTimeInterval lastA = 0;
+    NSTimeInterval nowA = [[NSProcessInfo processInfo] systemUptime];
+    if (nowA - lastA > 0.2) { lastA = nowA; poc_log(@"%s st=%ld", @"GEST_SCALEPAN", (long)g.state); }
+
     if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
 
     if (g.state == UIGestureRecognizerStateChanged) {
@@ -1075,6 +1117,10 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     }
 }
 - (void)onPinch:(UIPinchGestureRecognizer *)g {
+    static NSTimeInterval lastA = 0;
+    NSTimeInterval nowA = [[NSProcessInfo processInfo] systemUptime];
+    if (nowA - lastA > 0.2) { lastA = nowA; poc_log(@"%s st=%ld", @"GEST_PINCH", (long)g.state); }
+
     if (_fullscreen) return;   // v0.4.34: 全屏态禁用（仅拖动上滑可缩回）
 
     if (g.state == UIGestureRecognizerStateChanged) {
@@ -2976,7 +3022,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.6 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.7 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
