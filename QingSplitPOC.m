@@ -65,6 +65,12 @@ static void poc_open_log(void) {
 // ----------------------------------------------------------------------------
 // 小工具
 // ----------------------------------------------------------------------------
+// v0.6.1: presenter 接管候选 —— presenter 创建后 presentationView 可能延迟出现，
+// KEEP 循环每 tick 检查，就绪后用系统管理的 view 替换 legacy hostView（消除远程 layer 残影）
+static id g_presenterCandidate = nil;       // 已创建的 presenter（待 presentationView）
+static NSString *g_presenterCandidateSid = nil;
+static NSTimeInterval g_presenterCandidateAt = 0;
+
 static NSString *poc_cls(id obj) {
     if (!obj) return @"nil";
     return NSStringFromClass([obj class]);
@@ -1493,12 +1499,6 @@ static UIWindow *g_win = nil;
 // v0.5.0: 多浮窗 —— 全部活动浮窗窗口（UIWindow*）；g_win 等全局 = 最近激活窗口快捷引用
 static NSMutableArray *g_wins = nil;
 #define QS_MAX_WINDOWS 3
-// v0.6.1: presenter 接管候选 —— presenter 创建后 presentationView 可能延迟出现，
-// KEEP 循环每 tick 检查，就绪后用系统管理的 view 替换 legacy hostView（消除远程 layer 残影）
-static id g_presenterCandidate = nil;       // 已创建的 presenter（待 presentationView）
-static NSString *g_presenterCandidateSid = nil;
-static NSTimeInterval g_presenterCandidateAt = 0;
-
 static const void *kWinContainer = &kWinContainer;
 static const void *kWinHostView = &kWinHostView;
 static const void *kWinSid = &kWinSid;
