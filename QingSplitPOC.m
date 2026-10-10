@@ -881,6 +881,7 @@ static id win_get(UIWindow *w, const void *key);
 static void ctr_set(id c, const void *key, id val);
 static id ctr_get(id c, const void *key);
 static void poc_close_window(UIWindow *w);
+static void poc_unadopt_window(UIWindow *w);   // v0.6.5: 前向声明（close_window 定义早于实现）
 static void poc_save_float_state_for(NSString *sid, CGRect f);
 static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声明（onPan 拖到底→主屏打开早于定义）
 static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
@@ -1643,6 +1644,8 @@ static const void *kWinPendingN = &kWinPendingN;     // v0.5.4: 候选连续 tic
 static const void *kWinOwner = &kWinOwner;     // container → 所属 UIWindow
 static const void *kWinSidOwner = &kWinSidOwner;  // container → 所属 sid
 static const void *kWinAdopted = &kWinAdopted;  // v0.6.3: 本窗已完成 presenter 呈现接管（防重复）
+static const void *kWinAdoptedFrom = &kWinAdoptedFrom;  // v0.6.5: ADOPT 原 superview（关闭时放回，防 SB 呈现缺失→卡屏）
+static const void *kWinAdoptedIdx = &kWinAdoptedIdx;    // v0.6.5: ADOPT 原 index
 static void win_set(UIWindow *w, const void *key, id val) {
     if (w) objc_setAssociatedObject(w, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -2152,6 +2155,57 @@ static void poc_screen_restore(void) {
     g_sbContainer = nil;
 }
 
+// v0.6.5: 解除 presenter 接管 —— 把 presentationView 放回原 SB 容器，恢复系统呈现（防触摸瘫痪）
+// 关闭/锁屏/失活时调用；放回失败兜底 addSubview 到 SBRootSceneWindow
+static void poc_unadopt_window(UIWindow *w) {
+    @try {
+        if (!w || !win_get(w, kWinAdopted)) return;
+        UIView *pv = win_get(w, kWinHostView);
+        UIView *from = win_get(w, kWinAdoptedFrom);
+        NSNumber *idxN = win_get(w, kWinAdoptedIdx);
+        BOOL putBack = NO;
+        if (pv) {
+            [pv setHidden:NO];
+            if (from && pv.superview != from) {
+                [pv removeFromSuperview];
+                @try {
+                    NSInteger idx = idxN ? [idxN integerValue] : 0;
+                    if (idx >= 0 && idx <= (NSInteger)from.subviews.count) {
+                        [from insertSubview:pv atIndex:(NSUInteger)idx];
+                    } else {
+                        [from addSubview:pv];
+                    }
+                    putBack = YES;
+                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@", win_get(w, kWinSid), poc_cls(from));
+                } @catch (NSException *e) {
+                    [from addSubview:pv];
+                    putBack = YES;
+                    poc_log(@"UNADOPT_INSERT_EXC %@ → addSubview", e.name);
+                }
+            }
+            if (!putBack) {
+                // 兜底：挂到 SBRootSceneWindow（保持视图在树，SB 呈现系统可继续管理）
+                UIWindow *root = nil;
+                for (UIWindow *rw in [[UIApplication sharedApplication] windows]) {
+                    if ([poc_cls(rw) isEqualToString:@"SBRootSceneWindow"]) { root = rw; break; }
+                }
+                if (root && pv.superview != root) {
+                    [pv removeFromSuperview];
+                    [root addSubview:pv];
+                    putBack = YES;
+                    poc_log(@"UNADOPT_FALLBACK sid=%@ → SBRootSceneWindow", win_get(w, kWinSid));
+                }
+            }
+            if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
+        }
+        win_set(w, kWinAdopted, nil);
+        win_set(w, kWinAdoptedFrom, nil);
+        win_set(w, kWinAdoptedIdx, nil);
+    } @catch (NSException *e) {
+        poc_log(@"UNADOPT_EXC %@", e.name);
+    }
+}
+
 // v0.3.16: 关闭浮窗 —— 只移除浮窗 UI（窗口/容器/host/红诊断），不释放/杀死目标 App Scene
 // WRITE RISK = LOW
 //   - 只改自己创建的 UIWindow/视图的 hidden/引用；不动 SB 状态、不动 FBScene、不动 layerManager
@@ -2184,6 +2238,8 @@ static void poc_close_window(UIWindow *w) {
             g_diag = win_get(w, kWinDiag);
             g_sbContainer = win_get(w, kWinSB);
         }
+        // v0.6.5: 解除 presenter 接管（放回 presentationView）—— 必须在窗口移除前，否则 SB 呈现缺失→触摸瘫痪
+        poc_unadopt_window(w);
         // 1. 恢复主屏显示（若有隐藏 —— 只恢复本窗口 app 的 SB 呈现）
         if (g_sbContainer) {
             @try { poc_screen_restore(); } @catch (NSException *e) { }
@@ -2305,6 +2361,10 @@ static void poc_keep_float(void) {
                         [g_hostView removeFromSuperview];
                     }
                     if (pv.superview != g_container) {
+                        // v0.6.5: 记录原 superview/index —— 关闭时放回，恢复 SB 呈现（防触摸瘫痪）
+                        win_set(g_win, kWinAdoptedFrom, pv.superview);
+                        UIView *pf = pv.superview;
+                        win_set(g_win, kWinAdoptedIdx, pf ? @([pf.subviews indexOfObject:pv]) : @(0));
                         [pv setHidden:NO];          // 可能被 SCREEN_HIDE setHidden:YES，接管后恢复显示
                         [pv removeFromSuperview];   // 从 SB 树剥离 → SB 不再显示该 app 全屏
                         pv.frame = g_container.bounds;
