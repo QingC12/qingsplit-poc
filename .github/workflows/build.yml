@@ -391,9 +391,32 @@ jobs:
               qs_write_cfg(key, on ? @YES : @NO);
               qs_log(@"TARGET_SW key=%@ on=%d\n", key, on);
           }
+          // v0.4.94: 判断某 app 是否已勾选（CFPreferences target_<bid>）
+          static BOOL qs_t_enabled_bid(NSString *bid) {
+              if (!bid.length) return NO;
+              CFTypeRef v = CFPreferencesCopyAppValue((__bridge CFStringRef)[@"target_" stringByAppendingString:bid], CFSTR("com.qingsplit.poc"));
+              BOOL on = NO;
+              if (v) {
+                  if (CFGetTypeID(v) == CFBooleanGetTypeID()) on = CFBooleanGetValue((CFBooleanRef)v);
+                  else if (CFGetTypeID(v) == CFStringGetTypeID()) on = [(__bridge NSString *)v boolValue];
+                  CFRelease(v);
+              }
+              return on;
+          }
           static NSArray *qs_apps_cache(void) {
               static NSArray *cache = nil;
-              if (!cache) cache = qs_enumerate_apps();
+              if (!cache) {
+                  // v0.4.94: 已选择的应用排前面，未选择的排后面；同级再按名称
+                  NSArray *base = qs_enumerate_apps();
+                  NSArray *sorted = [base sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+                      BOOL ea = qs_t_enabled_bid(a[@"bundle"]);
+                      BOOL eb = qs_t_enabled_bid(b[@"bundle"]);
+                      if (ea != eb) return ea ? NSOrderedAscending : NSOrderedDescending;
+                      NSString *na = a[@"name"] ?: @"", *nb = b[@"name"] ?: @"";
+                      return [na compare:nb options:NSCaseInsensitiveSearch];
+                  }];
+                  cache = sorted;
+              }
               return cache;
           }
           // v0.4.88: 自绘子页 cell（图标+名称+UISwitch，完全脱离 Settings spec 渲染）
@@ -408,13 +431,31 @@ jobs:
                   UITableViewCell *c = [tv dequeueReusableCellWithIdentifier:@"qsc"];
                   if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"qsc"];
                   c.textLabel.text = app[@"name"];
-                  c.textLabel.font = [UIFont systemFontOfSize:16];
+                  // v0.4.94: 已选 → 蓝色加粗；未选 → 默认
+                  BOOL rowOn = qs_t_enabled_bid(bid);
+                  if (rowOn) {
+                      c.textLabel.textColor = [UIColor systemBlueColor];
+                      c.textLabel.font = [UIFont boldSystemFontOfSize:16];
+                  } else {
+                      c.textLabel.textColor = [UIColor labelColor];
+                      c.textLabel.font = [UIFont systemFontOfSize:16];
+                  }
                   // v0.4.91: 私有图标方法先查存在性，防 unrecognized selector 崩溃
                   SEL iconSel = NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:");
                   UIImage *icon = nil;
                   if ([UIImage respondsToSelector:iconSel]) icon = [UIImage performSelector:iconSel withObject:bid];
                   if (!icon) icon = [UIImage systemImageNamed:@"app.fill"];
                   c.imageView.image = icon;
+                  // v0.4.94: 已选图标加蓝色边框
+                  c.imageView.layer.cornerRadius = 7.0;
+                  c.imageView.layer.masksToBounds = YES;
+                  if (rowOn) {
+                      c.imageView.layer.borderWidth = 2.0;
+                      c.imageView.layer.borderColor = [[UIColor systemBlueColor] CGColor];
+                  } else {
+                      c.imageView.layer.borderWidth = 0;
+                      c.imageView.layer.borderColor = [[UIColor clearColor] CGColor];
+                  }
                   UISwitch *sw = [[UISwitch alloc] init];
                   sw.tag = (NSInteger)row;
                   BOOL on = NO;
@@ -758,5 +799,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.93_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.94_iphoneos-arm64e.deb
           if-no-files-found: warn
