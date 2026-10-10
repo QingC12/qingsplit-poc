@@ -3038,6 +3038,10 @@ static void poc_try_float(void) {
     // v0.4.15 原逻辑隐藏"浮"按钮 → v0.5.0: 多浮窗需要反复触发选择器，触发条保持常显
     poc_opening_hide();   // v0.4.31: 浮窗已建立 → 移除"正在打开"提示
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
+    // v0.6.17: 只读呈现探针（延迟，不阻塞建窗主流程）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        poc_probe_presentable(sid);
+    });
     g_launchPending = NO;   // v0.4.24: 启动链路完成（scene 已找到并建窗）
     // v0.5.0: 多浮窗 —— 窗口保持常显触发条（可继续多开）；探针记录窗口总数
     poc_log(@"WINDOW_ADD total=%lu sid=%@", (unsigned long)g_wins.count, sid);
