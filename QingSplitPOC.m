@@ -143,19 +143,22 @@ static BOOL poc_msgSend_setActivePrioritizedPresenter(id owner, id presenter) {
             }
             if (c) {
                 CGPoint cp = [t locationInView:(UIView *)c];
+                // 动态 msgSend（pocHandleTouch* 定义在文件后部，编译期对 id 不可见）
+                void (*fn2)(id, SEL, id, CGPoint) = (void (*)(id, SEL, id, CGPoint))objc_msgSend;
+                void (*fn1)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
                 switch (t.phase) {
                     case UITouchPhaseBegan:
                         if ([c respondsToSelector:@selector(pocHandleTouchBegan:point:)])
-                            [c pocHandleTouchBegan:t point:cp];
+                            fn2(c, sel_registerName("pocHandleTouchBegan:point:"), t, cp);
                         break;
                     case UITouchPhaseMoved:
                         if ([c respondsToSelector:@selector(pocHandleTouchMoved:point:)])
-                            [c pocHandleTouchMoved:t point:cp];
+                            fn2(c, sel_registerName("pocHandleTouchMoved:point:"), t, cp);
                         break;
                     case UITouchPhaseEnded:
                     case UITouchPhaseCancelled:
                         if ([c respondsToSelector:@selector(pocHandleTouchEnded:)])
-                            [c pocHandleTouchEnded:t];
+                            fn1(c, sel_registerName("pocHandleTouchEnded:"), t);
                         break;
                     default: break;
                 }
