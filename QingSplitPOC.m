@@ -891,7 +891,6 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (_knobL) [self bringSubviewToFront:_knobL];
     if (_knobR) [self bringSubviewToFront:_knobR];
     if (_gripBottom) [self bringSubviewToFront:_gripBottom];
-    UIView *topBtn = [self viewWithTag:779];
     if (topBtn) [self bringSubviewToFront:topBtn];
     CGSize native = self.nativeContentSize;
     if (native.width > 0 && native.height > 0) {
