@@ -545,6 +545,7 @@ static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化�
 static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义在下方全局区，供 QSFloatContainer 手势 ended 调用）
 static void poc_close_float(void);            // v0.3.16 前向声明（关闭浮窗：只移除窗口，不动 Scene）
 // v0.5.0: 多浮窗 —— 前向声明（QSFloatContainer 手势/关闭早于定义使用）
+static NSString *g_lastSid;   // 手势按 sid 保存记忆需要（定义在下方全局区）
 static const void *kWinOwner;
 static const void *kWinSidOwner;
 static void win_set(UIWindow *w, const void *key, id val);
