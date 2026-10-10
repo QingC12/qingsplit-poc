@@ -1648,6 +1648,7 @@ static const void *kWinAdopted = &kWinAdopted;  // v0.6.3: 本窗已完成 prese
 static const void *kWinAdoptedFrom = &kWinAdoptedFrom;  // v0.6.5: ADOPT 原 superview（关闭时放回，防 SB 呈现缺失→卡屏）
 static const void *kWinAdoptedIdx = &kWinAdoptedIdx;    // v0.6.5: ADOPT 原 index
 static const void *kWinScene = &kWinScene;    // v0.6.9: 目标 FBScene（UNADOPT 后激活恢复全屏呈现）
+static const void *kWinBundle = &kWinBundle;  // v0.6.10: 目标 bundleID（UNADOPT 后 LS 激活恢复全屏）
 static void win_set(UIWindow *w, const void *key, id val) {
     if (w) objc_setAssociatedObject(w, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -2262,24 +2263,26 @@ static void poc_unadopt_window(UIWindow *w) {
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
             // v0.6.8: 放回后重新激活 presenter —— 系统恢复呈现布局为全屏（核心修复）
             poc_reactivate_presenter(pv);
-            // v0.6.9: 延迟激活 scene 到前台 —— 系统重建全屏呈现（presenter 激活无效时的可靠路径）
-            id scene = win_get(w, kWinScene);
-            if (scene) {
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // v0.6.10: 延迟 LS 激活 app 到前台 —— 系统重建全屏呈现（不依赖 scene 对象，更可靠）
+            NSString *bid = win_get(w, kWinBundle);
+            if (!bid.length) {
+                NSString *wsid2 = win_get(w, kWinSid);
+                if ([wsid2 hasPrefix:@"sceneID:"]) {
+                    bid = [wsid2 substringFromIndex:@"sceneID:".length];
+                    NSRange dash = [bid rangeOfString:@"-" options:NSBackwardsSearch];
+                    if (dash.location != NSNotFound) bid = [bid substringToIndex:dash.location];
+                }
+            }
+            NSString *finalBid = bid;
+            if (finalBid.length) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     @try {
-                        SEL sel = sel_registerName("activateWithTransitionContext:");
-                        if ([scene respondsToSelector:sel]) {
-                            id ctx = nil;
-                            Class c = NSClassFromString(@"FBSSceneTransitionContext");
-                            if (c) ctx = [[c alloc] init];
-                            void (*fn)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-                            fn(scene, sel, ctx);
-                            poc_log(@"UNADOPT_SCENE_ACTIVATE called ctxCls=%@", ctx ? NSStringFromClass(c) : @"nil");
-                        } else {
-                            poc_log(@"UNADOPT_SCENE_NOAPI");
-                        }
+                        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+                        BOOL ok = NO;
+                        if (ws) ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:finalBid];
+                        poc_log(@"UNADOPT_LS_ACTIVATE sid=%@ ok=%d", finalBid, ok);
                     } @catch (NSException *e) {
-                        poc_log(@"UNADOPT_SCENE_ACT_EXC %@", e.name);
+                        poc_log(@"UNADOPT_LS_EXC %@", e.name);
                     }
                 });
             }
@@ -3003,6 +3006,7 @@ static void poc_try_float(void) {
         win_set(g_win, kWinHostView, hv);
         win_set(g_win, kWinDiag, g_diag);
         win_set(g_win, kWinScene, scene);   // v0.6.9: 存目标 scene（UNADOPT 激活用）
+        win_set(g_win, kWinBundle, wanted);  // v0.6.10: 存 bundleID（UNADOPT LS 激活用）
         poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=DARK native=%@ src=%@",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
