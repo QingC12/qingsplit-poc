@@ -1393,32 +1393,154 @@ static BOOL poc_hooked_gsb(id self, SEL _cmd, id gr) {
     } @catch (NSException *e) { }
     return g_orig_gsb ? g_orig_gsb(self, _cmd, gr) : YES;
 }
-static void poc_neutralize_sb_gestures(void) {
+// v0.5.11: UIApplication sendEvent 探针 —— 触摸路由实测
+static void (*g_orig_appSend)(id, SEL, id) = NULL;
+static void qs_appSend(id self, SEL _cmd, UIEvent *event) {
     @try {
-        // ① 遍历全部窗口（含 SB 高 level 窗口）的手势识别器
-        NSMutableArray *found = [NSMutableArray array];
-        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
-            NSArray *grs = w.gestureRecognizers;
-            for (UIGestureRecognizer *gr in grs) {
-                NSString *cn = NSStringFromClass([gr class]);
-                if ([cn containsString:@"Switcher"] || [cn containsString:@"Home"]
-                    || [cn containsString:@"Fluid"] || [cn containsString:@"Reachability"]
-                    || [cn containsString:@"SystemGesture"] || [cn containsString:@"SBFluid"]
-                    || [cn containsString:@"ClickAndDrag"]) {
-                    [found addObject:gr];
-                }
+        NSSet *ts = event.allTouches;
+        UITouch *t = [ts anyObject];
+        if (t) {
+            CGPoint p = [t locationInView:nil];
+            UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+            static NSTimeInterval lastA = 0;
+            NSTimeInterval nowA = [[NSProcessInfo processInfo] systemUptime];
+            if (nowA - lastA > 0.15) {
+                lastA = nowA;
+                poc_log(@"APP_SEND phase=%ld p=(%.0f,%.0f) key=%@",
+                        (long)t.phase, p.x, p.y,
+                        kw ? NSStringFromClass([kw class]) : @"nil");
             }
         }
+    } @catch (NSException *e) { }
+    if (g_orig_appSend) g_orig_appSend(self, _cmd, event);
+}
+// v0.5.11: 递归收集手势（window + subview 树）
+static void poc_collect_gestures(UIView *v, NSMutableArray *out, int depth) {
+    if (!v || depth > 14) return;
+    for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+        NSString *cn = NSStringFromClass([gr class]);
+        if ([cn containsString:@"Switcher"] || [cn containsString:@"Home"]
+            || [cn containsString:@"Fluid"] || [cn containsString:@"Reachability"]
+            || [cn containsString:@"SystemGesture"] || [cn containsString:@"SBFluid"]
+            || [cn containsString:@"ClickAndDrag"]) {
+            [out addObject:gr];
+        }
+    }
+    for (UIView *sv in v.subviews) poc_collect_gestures(sv, out, depth + 1);
+}
+// v0.5.11: SB 手势 delegate 包装类（转发全部，仅 shouldBegin 拦截浮窗容器）
+static Class g_sbDelCls = nil;
+static const void *kRealDel = &kRealDel;
+static BOOL qs_del_shouldBegin(id self, SEL _cmd, UIGestureRecognizer *gr) {
+    if (poc_touch_in_float_container(gr)) {
+        static NSTimeInterval lastB = 0;
+        NSTimeInterval nowB = [[NSProcessInfo processInfo] systemUptime];
+        if (nowB - lastB > 0.5) { lastB = nowB; poc_log(@"SBGEST_WRAP_BLOCK float-container"); }
+        return NO;
+    }
+    id real = objc_getAssociatedObject(self, kRealDel);
+    if (real && [real respondsToSelector:_cmd])
+        return (BOOL)[real gestureRecognizerShouldBegin:gr];
+    return YES;
+}
+static BOOL qs_del_responds(id self, SEL _cmd, SEL sel) {
+    if (sel == sel_registerName("gestureRecognizerShouldBegin:")) return YES;
+    id real = objc_getAssociatedObject(self, kRealDel);
+    if (real && [real respondsToSelector:sel]) return YES;
+    return NO;
+}
+static id qs_del_forward(id self, SEL _cmd, SEL sel) {
+    return objc_getAssociatedObject(self, kRealDel);
+}
+static void poc_init_sb_delegate_class(void) {
+    g_sbDelCls = objc_allocateClassPair([NSObject class], "_QSSBGestureDelegate", 0);
+    class_addMethod(g_sbDelCls, sel_registerName("gestureRecognizerShouldBegin:"),
+                    (IMP)qs_del_shouldBegin, "B@:@");
+    class_addMethod(g_sbDelCls, sel_registerName("respondsToSelector:"),
+                    (IMP)qs_del_responds, "B@::");
+    class_addMethod(g_sbDelCls, sel_registerName("forwardingTargetForSelector:"),
+                    (IMP)qs_del_forward, "@@::");
+    objc_registerClassPair(g_sbDelCls);
+    poc_log(@"SBGEST_DEL_CLASS_OK");
+}
+// v0.5.11: hook SBFluidSwitcherGestureManager 三个 action（Stheno 同款）
+static void poc_hook_sb_gsm_actions(void) {
+    @try {
+        Class gsm = NSClassFromString(@"SBFluidSwitcherGestureManager");
+        if (!gsm) { poc_log(@"SBGEST_NO_GSM_ACT"); return; }
+        NSArray *sels = @[@"_handleDeckSwitcherPanGesture:",
+                          @"_handleClickAndDragHomeGesture:",
+                          @"_handlePullGesture:"];
+        for (NSString *sn in sels) {
+            SEL sel = sel_registerName(sn.UTF8String);
+            Method m = class_getInstanceMethod(gsm, sel);
+            if (!m) { poc_log(@"SBGEST_NO_ACTION %@", sn); continue; }
+            void (*orig)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(m);
+            __block NSString *bsn = [sn copy];
+            method_setImplementation(m, imp_implementationWithBlock(^(id self, id gr) {
+                if (poc_touch_in_float_container(gr)) {
+                    static NSTimeInterval lastB = 0;
+                    NSTimeInterval nowB = [[NSProcessInfo processInfo] systemUptime];
+                    if (nowB - lastB > 0.5) { lastB = nowB; poc_log(@"SBGEST_ACTION_BLOCK %@", bsn); }
+                    return;   // 浮窗区域 SB 手势不处理
+                }
+                orig(self, sel, gr);
+            }));
+            poc_log(@"SBGEST_ACTION_HOOKED %@", sn);
+        }
+    } @catch (NSException *e) {
+        poc_log(@"SBGEST_ACT_EXC %@", e.name);
+    }
+}
+static void poc_neutralize_sb_gestures(void) {
+    @try {
+        poc_init_sb_delegate_class();
+        // ① UIApplication sendEvent 路由探针 —— 确认触摸是否进入 app 层、路由到哪个窗口
+        Class appCls = [UIApplication class];
+        SEL appSel = sel_registerName("sendEvent:");
+        Method appM = class_getInstanceMethod(appCls, appSel);
+        if (appM) {
+            g_orig_appSend = (void (*)(id, SEL, id))method_getImplementation(appM);
+            method_setImplementation(appM, imp_implementationWithBlock(^(id self, UIEvent *ev) {
+                qs_appSend(self, appSel, ev);
+            }));
+            poc_log(@"APP_SEND_HOOKED");
+        }
+        // ② 递归收集 SB 手势（window + 全 subview 树，上次只扫 window 直属 34 个 gate，
+        //    switcher 类手势挂在 subview 上未覆盖）
+        NSMutableArray *found = [NSMutableArray array];
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            poc_collect_gestures(w, found, 0);
+        }
         poc_log(@"SBGEST_FOUND %lu", (unsigned long)found.count);
+        // ③ 中和：全部取消触摸抢占；switcher 类手势额外换 delegate 包装（浮窗容器内 shouldBegin=NO）
+        static NSMutableArray *g_sbDels = nil;   // delegate 包装强持有（delegate 是 weak）
+        if (!g_sbDels) g_sbDels = [NSMutableArray array];
         for (UIGestureRecognizer *gr in found) {
             @try {
                 gr.cancelsTouchesInView = NO;
                 gr.delaysTouchesBegan = NO;
                 gr.delaysTouchesEnded = NO;
-                poc_log(@"SBGEST_NEUTRAL %@", NSStringFromClass([gr class]));
+                NSString *cn = NSStringFromClass([gr class]);
+                if ([cn containsString:@"Switcher"] || [cn containsString:@"Fluid"]
+                    || [cn containsString:@"Home"] || [cn containsString:@"ClickAndDrag"]
+                    || [cn containsString:@"Reachability"]) {
+                    // delegate 包装（仅拦截 gestureRecognizerShouldBegin:，其余转发）
+                    id origDel = gr.delegate;
+                    id wrap = [[g_sbDelCls alloc] init];
+                    if (origDel) objc_setAssociatedObject(wrap, kRealDel, origDel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    gr.delegate = wrap;
+                    [g_sbDels addObject:wrap];
+                    poc_log(@"SBGEST_WRAP %@ del=%@", cn,
+                            origDel ? NSStringFromClass([origDel class]) : @"nil");
+                } else {
+                    poc_log(@"SBGEST_NEUTRAL %@", cn);
+                }
             } @catch (NSException *e) { }
         }
-        // ② hook SBFluidSwitcherGestureManager.gestureRecognizerShouldBegin:
+        // ④ hook SBFluidSwitcherGestureManager 三个 action（Stheno 同款：浮窗容器内 SB 手势不处理）
+        poc_hook_sb_gsm_actions();
+        // ⑤ hook SBFluidSwitcherGestureManager.gestureRecognizerShouldBegin:（保留 v0.5.10）
         Class gsm = NSClassFromString(@"SBFluidSwitcherGestureManager");
         if (!gsm) { poc_log(@"SBGEST_NO_GSM"); return; }
         SEL gsb = sel_registerName("gestureRecognizerShouldBegin:");
@@ -3288,12 +3410,22 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.10 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.11 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
         // v0.5.10: SB 系统手势中和（触摸截断根因修复）—— 先于一切窗口/手势初始化
         poc_neutralize_sb_gestures();
+        // v0.5.11: 窗口层级快照 —— keyWindow 决定触摸路由（浮窗窗口是否收触摸的关键）
+        @try {
+            UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+            NSMutableString *ws = [NSMutableString string];
+            for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+                [ws appendFormat:@"%@:%@ ", NSStringFromClass([w class]), @((double)w.windowLevel)];
+            }
+            poc_log(@"WIN_SNAPSHOT key=%@ levels=%@",
+                    kw ? NSStringFromClass([kw class]) : @"nil", ws);
+        } @catch (NSException *e) { }
         // v0.4.16: 右侧滑动应用选择器（Stheno 风格入口）
         poc_setup_edge_trigger();
         // v0.3.15: KEEP tick 3s → 1s —— 主屏回退响应提速（app 重新打开后 ≤1s 隐藏全屏，缓解双 host 白屏闪烁）
