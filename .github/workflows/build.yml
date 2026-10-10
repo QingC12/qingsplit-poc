@@ -378,6 +378,7 @@ jobs:
               }];
               return out_;
           }
+          static NSArray *qs_apps_cache(void);   // v0.4.88: 前向声明
           // v0.4.88: 子页开关变化 → 写 CFPreferences（与 SpringBoard 同一域）
           static void qs_t_sw_changed(id self, SEL _cmd, id sw) {
               long idx = [(UIView*)sw tag];
@@ -433,6 +434,21 @@ jobs:
               self = ((id(*)(id, SEL, NSInteger))class_getMethodImplementation([UITableViewController class], @selector(initWithStyle:)))(self, _cmd, 1);
               [self setTitle:@"目标应用"];
               return self;
+          }
+          static IMP qs_orig_didSelect = NULL;
+          // v0.4.88: 入口行点击拦截 —— PSTableCell 渲染安全，点击后手动 push 自绘子页（绕开 detail-push 崩溃）
+          static void qs_swz_didSelect(id self, SEL _cmd, id tv, id ip) {
+              @try {
+                  UITableViewCell *cell = [tv cellForRowAtIndexPath:ip];
+                  id spec = cell ? [cell valueForKey:@"specifier"] : nil;
+                  NSString *ident = spec ? [spec valueForKey:@"identifier"] : nil;
+                  if ([ident isEqualToString:@"qs_targets_entry"]) {
+                      qs_log(@"ENTRY_TAPPED\n");
+                      qs_open_targets(self, @selector(qs_open_targets:), nil);
+                      return;
+                  }
+              } @catch (NSException *e) { qs_log(@"DIDSEL_EXC %@\n", e.name); }
+              if (qs_orig_didSelect) ((void(*)(id, SEL, id, id))qs_orig_didSelect)(self, _cmd, tv, ip);
           }
           // v0.4.88: 主页入口 action —— 手动 push 自绘子页（绕开 Settings detail-push）
           static void qs_open_targets(id self, SEL _cmd, id spec) {
@@ -494,12 +510,10 @@ jobs:
           // 子页仅含 PSSwitchCell（渲染安全，主页 79 开关已验证）；不再平铺 79 开关，实现真正的父目录
           static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
               @try {
-                  NSDictionary *entry = @{@"cell":@"PSButtonCell", @"label":@"目标应用"};
+                  NSDictionary *entry = @{@"cell":@"PSTableCell", @"label":@"目标应用", @"key":@"targets_entry"};
                   id es = qs_mk_spec(PS, self, entry);
                   if (!es) { qs_log(@"TARGETS_ENTRY_FAIL\n"); return; }
-                  // v0.4.88: action 手动 push 自绘子页（PSButtonCell 不触发 Settings detail-push 崩溃路径）
-                  @try { [es setTarget:self action:@selector(qs_open_targets:)]; }
-                  @catch (NSException *e) { qs_log(@"TARGETS_ACTION_EXC %@\n", e.name); }
+                  // v0.4.88: 点击由 didSelect swizzle 拦截（identifier=qs_targets_entry），手动 push 自绘子页
                   // 插入到"目标应用"组头（index 2）之后
                   NSUInteger ins = 3;
                   if ((NSUInteger)[arr count] < ins) ins = (NSUInteger)[arr count];
@@ -618,6 +632,15 @@ jobs:
               } else {
                   qs_log(@"CELL_METHOD_MISSING\n");
               }
+              // v0.4.88: didSelect swizzle —— 拦截"目标应用"入口行，手动 push 自绘子页
+              Method md = class_getInstanceMethod(ps, @selector(tableView:didSelectRowAtIndexPath:));
+              if (md) {
+                  qs_orig_didSelect = method_getImplementation(md);
+                  method_setImplementation(md, (IMP)qs_swz_didSelect);
+                  qs_log(@"DIDSEL_SWIZZLED\n");
+              } else {
+                  qs_log(@"DIDSEL_METHOD_MISSING\n");
+              }
               // 初始化默认值（CFPreferences，cfprefsd 落盘；仅未设置时写入）
               {
                   NSDictionary *def = @{ @"enabled": @YES, @"targets": @"", @"halfSnap": @YES,
@@ -711,5 +734,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.88_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.89_iphoneos-arm64e.deb
           if-no-files-found: warn
