@@ -544,6 +544,15 @@ static void poc_zorder_raise(NSString *targetSid, id targetScene) {
 static UIView *g_container = nil;   // QSFloatContainer 实例（static 简化）
 static void poc_save_float_state(CGRect f);   // v0.3.12 前向声明（定义在下方全局区，供 QSFloatContainer 手势 ended 调用）
 static void poc_close_float(void);            // v0.3.16 前向声明（关闭浮窗：只移除窗口，不动 Scene）
+// v0.5.0: 多浮窗 —— 前向声明（QSFloatContainer 手势/关闭早于定义使用）
+static const void *kWinOwner;
+static const void *kWinSidOwner;
+static void win_set(UIWindow *w, const void *key, id val);
+static id win_get(UIWindow *w, const void *key);
+static void ctr_set(id c, const void *key, id val);
+static id ctr_get(id c, const void *key);
+static void poc_close_window(UIWindow *w);
+static void poc_save_float_state_for(NSString *sid, CGRect f);
 static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声明（onPan 拖到底→主屏打开早于定义）
 static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
 static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明（设置读取，定义在下方全局区）
@@ -671,7 +680,9 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 }
 - (void)onCloseTap:(id)sender {
     poc_log(@"CLOSE_TAP");
-    poc_close_float();
+    // v0.5.0: 多浮窗 —— 关闭自己所属窗口（不再关全局活跃窗口）
+    UIWindow *own = ctr_get(self, kWinOwner);
+    poc_close_window(own);
 }
 // v0.4.55: 半屏吸附开关 —— 关闭后底部按钮不再吸附（仅浮动态移动）
 - (void)onBottomTap:(id)sender {
@@ -687,7 +698,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             [anim addAnimations:^{ self.frame = pf; }];
             [anim startAnimation];
             poc_log(@"BUTTON_UNSNAP restore=%@", NSStringFromCGRect(pf));
-            poc_save_float_state(pf);
+            poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, pf);
         } else {
             _preSnapFrame = self.frame;   // v0.4.9: 记录吸附前尺寸（恢复依据）
             // 最近边缘（按中心 x）
@@ -707,7 +718,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             [anim addAnimations:^{ self.frame = sf; }];
             [anim startAnimation];
             poc_log(@"BUTTON_SNAP %@ pre=%@", NSStringFromCGRect(sf), NSStringFromCGRect(_preSnapFrame));
-            poc_save_float_state(sf);
+            poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, sf);
         }
     } @catch (NSException *e) {
         poc_log(@"SNAP_EXC %@", e.name);
@@ -876,9 +887,9 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:tp];
             [anim addAnimations:^{ self.frame = sf; }];
             [anim startAnimation];
-            poc_save_float_state(sf);
+            poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, sf);
         } else {
-            poc_save_float_state(f);
+            poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, f);
         }
     }
 }
@@ -902,7 +913,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:tp];
     [anim addAnimations:^{ self.frame = rf; }];
     [anim startAnimation];
-    poc_save_float_state(rf);
+    poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, rf);
 }
 - (void)onPan:(UIPanGestureRecognizer *)g {
     if (g.state == UIGestureRecognizerStateChanged) {
@@ -938,7 +949,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             [self setGestureChromeVisible:YES];
             _halfSnapped = NO;
             poc_log(@"FULLSCREEN_TO_MAIN from=%@", NSStringFromCGRect(f));
-            poc_close_float();   // 1. 关闭浮窗（只移除窗口，不杀 Scene）
+            poc_close_window(ctr_get(self, kWinOwner));   // 1. 关闭本窗口（只移除窗口，不杀 Scene）
             // 2. 目标 app 拉回前台全屏（后台线程 LS，不阻塞主线程）
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                 NSString *b = poc_current_bundle();
@@ -982,9 +993,9 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:tp];
             [anim addAnimations:^{ self.frame = sf; }];
             [anim startAnimation];
-            poc_save_float_state(sf);   // 保存惯性后的目标位置
+            poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, sf);   // 保存惯性后的目标位置
         } else {
-            poc_save_float_state(self.frame);   // v0.3.12: 位置记忆
+            poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, self.frame);   // v0.3.12: 位置记忆
         }
     }
 }
@@ -1013,7 +1024,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         [g setTranslation:CGPointZero inView:self];
     } else if (g.state == UIGestureRecognizerStateEnded) {
         _halfSnapped = NO;   // v0.4.9: 角落缩放脱离半屏态（用户主动改尺寸）
-        poc_save_float_state(self.frame);   // v0.3.12: 尺寸记忆
+        poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, self.frame);   // v0.3.12: 尺寸记忆
     }
 }
 - (void)onPinch:(UIPinchGestureRecognizer *)g {
@@ -1037,6 +1048,29 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 @end
 
 static UIWindow *g_win = nil;
+// v0.5.0: 多浮窗 —— 全部活动浮窗窗口（UIWindow*）；g_win 等全局 = 最近激活窗口快捷引用
+static NSMutableArray *g_wins = nil;
+#define QS_MAX_WINDOWS 3
+static const void *kWinContainer = &kWinContainer;
+static const void *kWinHostView = &kWinHostView;
+static const void *kWinSid = &kWinSid;
+static const void *kWinCtx = &kWinCtx;
+static const void *kWinDiag = &kWinDiag;
+static const void *kWinSB = &kWinSB;
+static const void *kWinOwner = &kWinOwner;     // container → 所属 UIWindow
+static const void *kWinSidOwner = &kWinSidOwner;  // container → 所属 sid
+static void win_set(UIWindow *w, const void *key, id val) {
+    if (w) objc_setAssociatedObject(w, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static id win_get(UIWindow *w, const void *key) {
+    return w ? objc_getAssociatedObject(w, key) : nil;
+}
+static void ctr_set(id c, const void *key, id val) {
+    if (c) objc_setAssociatedObject(c, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+static id ctr_get(id c, const void *key) {
+    return c ? objc_getAssociatedObject(c, key) : nil;
+}
 static UIView *g_hostView = nil;
 static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，20s 后移除）
 static NSString *g_lastSid = nil;  // v0.1.8: 保持模式 —— 目标 scene id
@@ -1170,6 +1204,64 @@ static CGRect poc_load_float_state(void) {
     return d;
 }
 
+// v0.5.0: 多浮窗 —— 按 sid 保存/加载窗口记忆（windows 数组 [{sid,ox,oy,w,h},...]）
+static void poc_save_float_state_for(NSString *sid, CGRect f) {
+    if (!sid.length) { poc_save_float_state(f); return; }
+    @try {
+        NSMutableArray *items = nil;
+        for (NSString *p in poc_state_paths()) {
+            NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:p];
+            if (d2 && [d2[@"windows"] isKindOfClass:[NSArray class]]) { items = [d2[@"windows"] mutableCopy]; break; }
+        }
+        if (!items) items = [NSMutableArray array];
+        NSDictionary *entry = @{@"sid": sid, @"ox": @(f.origin.x), @"oy": @(f.origin.y),
+                                @"w": @(f.size.width), @"h": @(f.size.height)};
+        NSInteger idx = -1;
+        for (NSUInteger i = 0; i < items.count; i++) {
+            if ([[items[i][@"sid"] description] isEqualToString:sid]) { idx = (NSInteger)i; break; }
+        }
+        if (idx >= 0) items[(NSUInteger)idx] = entry; else [items addObject:entry];
+        for (NSString *p in poc_state_paths()) {
+            NSMutableDictionary *pd = [NSMutableDictionary dictionaryWithContentsOfFile:p];
+            if (!pd) continue;
+            pd[@"windows"] = items;
+            if ([pd writeToFile:p atomically:YES]) {
+                poc_log(@"STATE_SAVE_WIN sid=%@ %@ %@", sid, NSStringFromCGRect(f), p);
+                break;
+            }
+        }
+    } @catch (NSException *e) { poc_log(@"STATE_SAVE_WIN_EXC %@", e.name); }
+}
+static CGRect poc_load_float_state_for(NSString *sid) {
+    CGRect d = CGRectMake((430.0 - 340.0) / 2.0, (932.0 - 500.0) / 2.0, 340, 500);
+    if (!sid.length) return d;
+    @try {
+        for (NSString *p in poc_state_paths()) {
+            NSDictionary *d2 = [NSDictionary dictionaryWithContentsOfFile:p];
+            if (!d2) continue;
+            NSArray *items = d2[@"windows"];
+            if (![items isKindOfClass:[NSArray class]]) continue;
+            BOOL hit = NO;
+            for (NSDictionary *e in items) {
+                if (![[e[@"sid"] description] isEqualToString:sid]) continue;
+                CGFloat ox = [e[@"ox"] doubleValue], oy = [e[@"oy"] doubleValue];
+                CGFloat w = [e[@"w"] doubleValue], h = [e[@"h"] doubleValue];
+                BOOL sane = (w >= 240 && w <= 430 && h >= 240 && h <= 932 && (h / w) <= 3.2);
+                if (sane) {
+                    ox = MAX(0, MIN(ox, 430.0 - w));
+                    oy = MAX(0, MIN(oy, 932.0 - h));
+                    d = CGRectMake(ox, oy, w, h);
+                    poc_log(@"STATE_LOAD_WIN sid=%@ %@ %@", sid, NSStringFromCGRect(d), p);
+                    hit = YES;
+                }
+                break;
+            }
+            if (hit) break;
+        }
+    } @catch (NSException *e) { }
+    return d;
+}
+
 // v0.3.12: 主屏回退 —— 在 SB 视图树中找目标 scene 的呈现容器（_UISceneLayerHostContainerView）
 // 链（探针 v0.1.2/0.1.3 已验证）：容器 → _dataSource(_UIScenePresentationView) → presenter → owner → scene
 // 也尝试容器直持 _scene（探针注释：容器持有 _scene + _presentationContext + _dataSource）
@@ -1261,37 +1353,72 @@ static void poc_screen_restore(void) {
 //   - 只改自己创建的 UIWindow/视图的 hidden/引用；不动 SB 状态、不动 FBScene、不动 layerManager
 //   - g_win 置 nil 后 poc_try_float 下一 tick 重新建窗 → "关闭后重新打开仍能 HOST_REFRESH"
 //   - 主屏回退恢复（露出桌面）；scene 的 layer 保持系统管理，原 app 仍在
-static void poc_close_float(void) {
+// v0.5.0: 关闭指定浮窗（多窗口）—— 只移除该窗口 UI，不动 Scene；从 g_wins 移除并更新活跃引用
+static void poc_close_window(UIWindow *w) {
     @try {
-        poc_screen_restore();          // 1. 恢复主屏显示（若有隐藏）
+        if (!w) return;
+        // 把全局快捷引用指向要关闭的窗口（复用原关闭逻辑）
+        if (w != g_win) {
+            g_win = w;
+            g_container = win_get(w, kWinContainer);
+            g_hostView = win_get(w, kWinHostView);
+            g_lastSid = win_get(w, kWinSid);
+            g_lastCtx = [win_get(w, kWinCtx) integerValue];
+            g_diag = win_get(w, kWinDiag);
+            g_sbContainer = win_get(w, kWinSB);
+        }
+        // 1. 恢复主屏显示（若有隐藏 —— 只恢复本窗口 app 的 SB 呈现）
+        if (g_sbContainer) {
+            @try { poc_screen_restore(); } @catch (NSException *e) { }
+        }
         if (g_win) {
             // v0.4.0+: 关闭动画 —— v0.4.7 借鉴 Stheno AnyTransition（asymmetric 移除侧）：
             // 0.15s 淡出 + scale 1.0→0.96，完成后移除（先解除引用防重复点击二次动画）
-            UIWindow *w = g_win;
+            UIWindow *w2 = g_win;
             g_win = nil;
             [UIView animateWithDuration:0.15 delay:0 options:UIViewAnimationOptionCurveEaseIn
                              animations:^{
-                w.alpha = 0.0;
-                w.transform = CGAffineTransformMakeScale(0.96, 0.96);
+                w2.alpha = 0.0;
+                w2.transform = CGAffineTransformMakeScale(0.96, 0.96);
             }
                              completion:^(BOOL done) {
-                w.rootViewController = nil;
-                w.hidden = YES;
+                w2.rootViewController = nil;
+                w2.hidden = YES;
             }];
         }
         g_container = nil;
         g_hostView = nil;
         g_diag = nil;
         g_floatClosed = YES;           // v0.3.18: 保持关闭 —— 不自动重建；目标 scene 消失后才复位
-        // v0.3.18: g_lastSid 保留（用于判断目标 scene 何时消失）；g_lastCtx 归零
         g_lastCtx = 0;
-        // v0.4.15: 浮窗关闭 → "浮"按钮重现（手动触发入口）
-        if (g_triggerWin) g_triggerWin.hidden = NO;
+        // 从多窗口数组移除 + 清关联
+        [g_wins removeObject:w];
+        win_set(w, kWinContainer, nil); win_set(w, kWinHostView, nil);
+        win_set(w, kWinSid, nil); win_set(w, kWinCtx, nil);
+        win_set(w, kWinDiag, nil); win_set(w, kWinSB, nil);
+        // 活跃引用指向剩余最后一个窗口
+        UIWindow *last = g_wins.lastObject;
+        if (last) {
+            g_win = last;
+            g_container = win_get(last, kWinContainer);
+            g_hostView = win_get(last, kWinHostView);
+            g_lastSid = win_get(last, kWinSid);
+            g_lastCtx = [win_get(last, kWinCtx) integerValue];
+            g_diag = win_get(last, kWinDiag);
+            g_sbContainer = win_get(last, kWinSB);
+        } else {
+            g_sbContainer = nil;
+            if (g_triggerWin) g_triggerWin.hidden = NO;   // 无浮窗 → 触发条/入口重现
+        }
         poc_opening_hide();   // v0.4.31: 关闭浮窗 → 提示条不可能残留
-        poc_log(@"FLOAT_CLOSED — scene untouched, window removed, stay closed until target app exits");
+        poc_log(@"FLOAT_CLOSED total=%lu — scene untouched, window removed", (unsigned long)g_wins.count);
     } @catch (NSException *e) {
         poc_log(@"FLOAT_CLOSE_EXC %@", e.name);
     }
+}
+// v0.3.16 兼容：关闭最近激活窗口
+static void poc_close_float(void) {
+    poc_close_window(g_win);
 }
 
 // v0.2.1: B 方案最小写 —— 空窗期调用 activateWithTransitionContext: 拉回 scene
@@ -1528,9 +1655,46 @@ static void poc_keep_float(void) {
 static void poc_try_float(void) {
     // v0.4.0: 总开关（设置）
     if (!poc_setting_bool(@"enabled", YES)) return;
-    if (g_win) {   // v0.1.8: 窗口已建立 → 保持模式
-        poc_keep_float();
+    if (g_wins.count && !g_triggerArmed && !g_launchPending) {
+        // v0.5.0: 多窗口保持 —— 逐个窗口 HOST_REFRESH；有新选择（triggerArmed）则继续多开新窗
+        for (UIWindow *w in [g_wins copy]) {
+            if (!w) continue;
+            g_win = w;
+            g_container = win_get(w, kWinContainer);
+            g_hostView = win_get(w, kWinHostView);
+            g_lastSid = win_get(w, kWinSid);
+            g_lastCtx = [win_get(w, kWinCtx) integerValue];
+            g_diag = win_get(w, kWinDiag);
+            g_sbContainer = win_get(w, kWinSB);
+            @try { poc_keep_float(); } @catch (NSException *e) { poc_log(@"KEEP_WIN_EXC %@", e.name); }
+            // 写回（keep 可能更新 ctx/hostView/sbContainer）
+            win_set(w, kWinContainer, g_container);
+            win_set(w, kWinHostView, g_hostView);
+            win_set(w, kWinSid, g_lastSid);
+            win_set(w, kWinCtx, @(g_lastCtx));
+            win_set(w, kWinDiag, g_diag);
+            win_set(w, kWinSB, g_sbContainer);
+        }
+        // 活跃引用指向最后一个窗口
+        UIWindow *last = g_wins.lastObject;
+        if (last) {
+            g_win = last;
+            g_container = win_get(last, kWinContainer);
+            g_hostView = win_get(last, kWinHostView);
+            g_lastSid = win_get(last, kWinSid);
+            g_lastCtx = [win_get(last, kWinCtx) integerValue];
+            g_diag = win_get(last, kWinDiag);
+            g_sbContainer = win_get(last, kWinSB);
+        }
         return;
+    }
+    // v0.5.0: 窗口数超限 → 关最旧（多开保护）
+    if (g_wins.count >= QS_MAX_WINDOWS) {
+        UIWindow *oldest = g_wins.firstObject;
+        if (oldest) {
+            poc_log(@"WINDOW_LIMIT total=%lu → close oldest", (unsigned long)g_wins.count);
+            poc_close_window(oldest);
+        }
     }
     // v0.4.15: 手动触发 —— 只有"浮"按钮被按下才尝试建浮窗；不再每次自动弹
     // v0.4.24: 未运行应用启动中（g_launchPending）也保持轮询，直到 scene 出现/超时
@@ -1678,6 +1842,11 @@ static void poc_try_float(void) {
         g_win.windowLevel = 999.0;
         g_win.hidden = NO;
         g_win.userInteractionEnabled = YES;
+        // v0.5.0: 多浮窗 —— 加入窗口数组
+        if (!g_wins) g_wins = [NSMutableArray array];
+        [g_wins addObject:g_win];
+        win_set(g_win, kWinSid, sid);
+        win_set(g_win, kWinCtx, @(ctx));
         // v0.1.5: SB 是 scene-based，未关联 windowScene 的窗口不渲染（SthenoWindow 实测 SCENE=SuperHighLevelSystemAperture）
         // 优先关联 SuperHighLevelSystemAperture scene，兜底第一个 UIWindowScene
         NSString *winScene = @"nil";
@@ -1725,7 +1894,8 @@ static void poc_try_float(void) {
             if (ch > 860) { ch = 860; cw = ch * (native.width / native.height); }
         }
         // v0.3.12: 优先恢复记忆的浮窗位置/尺寸（拖动/缩放结束时已持久化）
-        CGRect memFrame = poc_load_float_state();
+        // v0.5.0: 多浮窗 —— 按 sid 恢复各自记忆
+        CGRect memFrame = poc_load_float_state_for(sid);
         CGRect cframe = CGRectMake((g_win.bounds.size.width - cw) / 2.0,
                                    (g_win.bounds.size.height - ch) / 2.0,
                                    cw, ch);
@@ -1737,6 +1907,12 @@ static void poc_try_float(void) {
         [container layoutIfNeeded];
         g_container = container;
         g_hostView = hv;
+        // v0.5.0: 多浮窗 —— container 关联所属窗口与 sid（手势保存/关闭定位用）
+        ctr_set(container, kWinOwner, g_win);
+        ctr_set(container, kWinSidOwner, sid);
+        win_set(g_win, kWinContainer, container);
+        win_set(g_win, kWinHostView, hv);
+        win_set(g_win, kWinDiag, g_diag);
         poc_log(@"WINDOW_OK class=%@ level=%.1f frame=%@ container=%@ host=%@ scene=%@ bg=DARK native=%@ src=%@",
                 poc_cls(g_win), g_win.windowLevel,
                 NSStringFromCGRect(g_win.frame), poc_cls(container), poc_cls(hv), winScene,
@@ -1762,19 +1938,31 @@ static void poc_try_float(void) {
     poc_mark_ok();
     g_lastSid = [sid copy];
     g_lastCtx = ctx;
-    // v0.4.15: 浮窗建立 → 隐藏"浮"按钮（浮窗有关闭按钮，无需双入口）
-    if (g_triggerWin) g_triggerWin.hidden = YES;
+    // v0.4.15 原逻辑隐藏"浮"按钮 → v0.5.0: 多浮窗需要反复触发选择器，触发条保持常显
     poc_opening_hide();   // v0.4.31: 浮窗已建立 → 移除"正在打开"提示
     poc_log(@"POC_OK sid=%@ path=%d — floating window established", sid, path);
     g_launchPending = NO;   // v0.4.24: 启动链路完成（scene 已找到并建窗）
+    // v0.5.0: 多浮窗 —— 窗口保持常显触发条（可继续多开）；探针记录窗口总数
+    poc_log(@"WINDOW_ADD total=%lu sid=%@", (unsigned long)g_wins.count, sid);
     // v0.3.12: 主屏回退 —— 隐藏目标 app 的全屏呈现（露出桌面/主屏不显示）。
     // 在 POC_OK 后执行：若 SB 容器隐藏失败不影响浮窗（只日志）。
     // v0.4.0: 主屏回退开关（设置）
     // v0.4.36: 延迟 0.8s 再隐藏 —— 先让 host 内容渲染稳定（layer 刚挂载时 context 可能空窗，
     // 立即隐藏 SB 呈现会让浮窗只显示手势指示、无内容）
     if (poc_setting_bool(@"screenHide", YES)) {
+        // v0.5.0: 多浮窗 —— 闭包捕获本窗口，操作其关联的 SB 容器，隐藏后写回并恢复活跃引用
+        UIWindow *wRef = g_win;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (g_win) poc_screen_hide(sid);
+            if (![g_wins containsObject:wRef]) return;
+            g_win = wRef;
+            g_sbContainer = win_get(wRef, kWinSB);
+            poc_screen_hide(sid);
+            win_set(wRef, kWinSB, g_sbContainer);
+            UIWindow *last = g_wins.lastObject;
+            if (last && last != wRef) {
+                g_win = last;
+                g_sbContainer = win_get(last, kWinSB);
+            }
         });
     }
     // v0.1.7: 心跳日志验证主线程活性（若 10s/30s TICK 缺失 → 主线程被 host 阻塞）
@@ -2162,7 +2350,7 @@ static void poc_picker_show(void) {
     @try {
         g_sceneActivationUsed = NO;           // v0.4.30: 每次打开选择器重置系统级激活标记
         g_sceneActivationFallbackDone = NO;
-        if (!g_triggerWin || g_win) return;   // 浮窗已激活 → 不弹选择器
+        if (!g_triggerWin) return;   // v0.5.0: 多浮窗 —— 浮窗存在时仍可弹选择器（多开入口）
         if (!g_pickerVC) {
             UIViewController *vc = [[UIViewController alloc] init];
             vc.view.backgroundColor = [UIColor clearColor];
@@ -2615,7 +2803,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.4.94 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.0 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
