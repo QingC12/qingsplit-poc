@@ -563,6 +563,40 @@ static UIView *poc_make_host_view(id sceneLayer, NSInteger ctx, int *outPath) {
 // ----------------------------------------------------------------------------
 static UIView *poc_make_presenter_view(NSString *targetSid, id targetScene) {
     @try {
+        // v0.6.1: 主动创建 presenter（Stheno createPresenterWithIdentifier:priority: 写路径）
+        // 先做只读获取；拿不到 → 从 presentationManager 创建 presenter（呈现接管，主屏不切走）
+        id pm2 = poc_tryKVC(targetScene, @[@"_presentationManager", @"presentationManager", @"presentationManagerForVisibility", @"_presentationManagerForVisibility"]);
+        if (pm2) {
+            SEL cps = NSSelectorFromString(@"createPresenterWithIdentifier:priority:");
+            if ([pm2 respondsToSelector:cps]) {
+                NSString *pid = [NSString stringWithFormat:@"qing-float-%@", targetSid];
+                id presenter = nil;
+                @try {
+                    id (*fn)(id, SEL, id, NSInteger) = (id (*)(id, SEL, id, NSInteger))objc_msgSend;
+                    presenter = fn(pm2, cps, pid, 0);
+                } @catch (NSException *e) {
+                    poc_log(@"PRESENTER_CREATE_EXC %@", e.name);
+                }
+                if (presenter) {
+                    id pv = poc_tryKVC(presenter, @[@"presentationView", @"_presentationView", @"view"]);
+                    if (pv && [pv isKindOfClass:[UIView class]]) {
+                        poc_log(@"PRESENTER_CREATED_READY sid=%@ presenter=%@ pv=%@ pm=%@", targetSid, poc_cls(presenter), poc_cls(pv), poc_cls(pm2));
+                        return (UIView *)pv;
+                    }
+                    // presenter 已创建但 view 未就绪 —— 记入 KEEP 候选，渐进接管
+                    g_presenterCandidate = presenter;
+                    g_presenterCandidateSid = [targetSid copy];
+                    g_presenterCandidateAt = CACurrentMediaTime();
+                    poc_log(@"PRESENTER_CREATED_WAIT sid=%@ presenter=%@ (view pending — keep polling)", targetSid, poc_cls(presenter));
+                    return nil;
+                }
+                poc_log(@"PRESENTER_CREATE_NIL sid=%@ pm=%@", targetSid, poc_cls(pm2));
+            } else {
+                poc_log(@"PRESENTER_NO_SELECTOR sid=%@ pm=%@", targetSid, poc_cls(pm2));
+            }
+        } else {
+            poc_log(@"PRESENTER_NO_PM sid=%@", targetSid);
+        }
         // 1) 先直接查 targetScene 的 presentationManager / presenter 链
         id pm = poc_tryKVC(targetScene, @[@"_presentationManager", @"presentationManager", @"presentationManagerForVisibility", @"_presentationManagerForVisibility"]);
         if (pm) {
@@ -1719,6 +1753,12 @@ static NSString *g_manualSid = nil;      // v0.4.16: 手动选中的目标 scene
 static BOOL g_triggerArmed = NO;
 static const char *g_targetSid = NULL;   // v0.4.39: RENDER_FAIL 诊断（最近目标 scene id）
 static NSInteger g_targetLc = -1;        // v0.4.39: RENDER_FAIL 诊断（最近 layerCount）
+// v0.6.1: presenter 接管候选 —— presenter 创建后 presentationView 可能延迟出现，
+// KEEP 循环每 tick 检查，就绪后用系统管理的 view 替换 legacy hostView（消除远程 layer 残影）
+static id g_presenterCandidate = nil;       // 已创建的 presenter（待 presentationView）
+static NSString *g_presenterCandidateSid = nil;
+static NSTimeInterval g_presenterCandidateAt = 0;
+
 static BOOL g_launchPending = NO;        // v0.4.24: 已选择未运行应用 → 启动后等待 scene 出现
 static NSTimeInterval g_launchPendingAt = 0;
 static BOOL g_sceneActivationUsed = NO;          // v0.4.30: 本次选择器是否已走系统级 scene 激活（UIWindowSceneActivationConfiguration）
@@ -2120,6 +2160,39 @@ static void poc_probe_scene_apis(id scene) {
 // v0.1.8: 保持模式 —— 切换应用后 scene layer 可能被系统重建（contextID 漂移），
 // 每 3s 检测：窗口存活 / host 存活 / contextID 变化 → 自动重建 host view
 static void poc_keep_float(void) {
+    // v0.6.1: presenter 渐进接管 —— 候选 presenter 的 view 就绪后替换 legacy hostView
+    // （系统管理 layer → 拖动/缩放不再手动重映射 → 残影消失）
+    if (g_presenterCandidate && g_container) {
+        @try {
+            if (CACurrentMediaTime() - g_presenterCandidateAt > 15.0) {
+                poc_log(@"PRESENTER_ADOPT_TIMEOUT sid=%@", g_presenterCandidateSid);
+                g_presenterCandidate = nil;
+                g_presenterCandidateSid = nil;
+            } else {
+                id pv = poc_tryKVC(g_presenterCandidate, @[@"presentationView", @"_presentationView", @"view"]);
+                if (pv && [pv isKindOfClass:[UIView class]]) {
+                    UIView *newHost = (UIView *)pv;
+                    // 旧 host 移除，新 host 加入容器（位置/尺寸由容器 layout 控制）
+                    if (g_hostView && g_hostView.superview == g_container) [g_hostView removeFromSuperview];
+                    g_hostView = newHost;
+                    newHost.frame = g_container.bounds;
+                    newHost.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                    [g_container addSubview:newHost];
+                    [g_container sendSubviewToBack:newHost];
+                    g_container.userInteractionEnabled = YES;
+                    // 替换窗口记忆里的 hostView
+                    if (g_win) win_set(g_win, kWinHostView, g_hostView);
+                    poc_log(@"PRESENTER_ADOPT sid=%@ pv=%@ (legacy host replaced — system-managed layer)", g_presenterCandidateSid, poc_cls(pv));
+                    g_presenterCandidate = nil;
+                    g_presenterCandidateSid = nil;
+                }
+            }
+        } @catch (NSException *e) {
+            poc_log(@"PRESENTER_ADOPT_EXC %@", e.name);
+            g_presenterCandidate = nil;
+            g_presenterCandidateSid = nil;
+        }
+    }
     @try {
         BOOL winAlive = NO;
         for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
