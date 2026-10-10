@@ -436,6 +436,7 @@ jobs:
               return self;
           }
           static IMP qs_orig_didSelect = NULL;
+          static void qs_open_targets(id self, SEL _cmd, id spec);   // v0.4.89: 前向声明
           // v0.4.88: 入口行点击拦截 —— PSTableCell 渲染安全，点击后手动 push 自绘子页（绕开 detail-push 崩溃）
           static void qs_swz_didSelect(id self, SEL _cmd, id tv, id ip) {
               @try {
