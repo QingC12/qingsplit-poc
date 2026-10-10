@@ -1401,6 +1401,22 @@ static void qs_appSend(id self, SEL _cmd, UIEvent *event) {
         UITouch *t = [ts anyObject];
         if (t) {
             CGPoint p = [t locationInView:nil];
+            // v0.5.12: 触摸路由兜底 —— 触摸落在任一浮窗容器内 → 手动转发给浮窗窗口
+            // （iOS17 只把事件给 keyWindow；makeKey 后浮窗即 key，此兜底覆盖非 key 浮窗/遍历不完整场景）
+            if (g_wins.count) {
+                for (UIWindow *w in [g_wins copy]) {
+                    QSFloatContainer *c = (QSFloatContainer *)win_get(w, kWinContainer);
+                    if (!c || !c.window) continue;
+                    CGPoint cp = [c convertPoint:p fromView:nil];
+                    if (CGRectContainsPoint(c.bounds, cp)) {
+                        static NSTimeInterval lastF = 0;
+                        NSTimeInterval nowF = [[NSProcessInfo processInfo] systemUptime];
+                        if (nowF - lastF > 0.2) { lastF = nowF; poc_log(@"APP_SEND_FWD p=(%.0f,%.0f) win=%@", p.x, p.y, NSStringFromClass([w class])); }
+                        [w sendEvent:event];   // 我们的 override → 手动派发容器触摸
+                        return;                 // 浮窗区域独占，不再给 keyWindow
+                    }
+                }
+            }
             UIWindow *kw = [UIApplication sharedApplication].keyWindow;
             static NSTimeInterval lastA = 0;
             NSTimeInterval nowA = [[NSProcessInfo processInfo] systemUptime];
@@ -2381,6 +2397,14 @@ static void poc_try_float(void) {
         g_win.windowLevel = 999.0;
         g_win.hidden = NO;
         g_win.userInteractionEnabled = YES;
+        // v0.5.12: 恢复 makeKey —— v0.5.11 实锤：iOS17 触摸只路由给 keyWindow
+        // （key=SBMainSwitcherWindow，浮窗窗口被 hitTest 命中容器但从未收 sendEvent）
+        // → 浮窗窗口必须成为 keyWindow 才能收到触摸（v0.4.x 单浮窗可操作的机制）
+        [g_win makeKeyAndVisible];
+        @try {
+            UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+            poc_log(@"WINDOW_KEY key=%@", kw ? NSStringFromClass([kw class]) : @"nil");
+        } @catch (NSException *e) { }
         // v0.5.0: 多浮窗 —— 加入窗口数组
         if (!g_wins) g_wins = [NSMutableArray array];
         [g_wins addObject:g_win];
@@ -3410,7 +3434,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.11 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.12 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
