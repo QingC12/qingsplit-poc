@@ -355,6 +355,23 @@ jobs:
               } @catch (NSException *e) { qs_log(@"BUILD_DUMP_EXC %@\n", e.name); }
               return spec;
           }
+          // v0.4.87: 子页生命周期探针 —— 定位 push 崩溃发生在 init/loadView/viewDidLoad/specifiers 哪一步
+          static id qs_t_init(id self, SEL _cmd) {
+              qs_log(@"TARGETS_INIT_BEGIN\n");
+              id r = ((id(*)(id, SEL))class_getMethodImplementation(NSClassFromString(@"PSListController"), @selector(init)))(self, _cmd);
+              qs_log(@"TARGETS_INIT_END %@\n", r);
+              return r;
+          }
+          static void qs_t_loadView(id self, SEL _cmd) {
+              qs_log(@"TARGETS_LOADVIEW_BEGIN\n");
+              ((void(*)(id, SEL))class_getMethodImplementation(NSClassFromString(@"PSViewController"), NSSelectorFromString(@"loadView")))(self, _cmd);
+              qs_log(@"TARGETS_LOADVIEW_END\n");
+          }
+          static void qs_t_viewDidLoad(id self, SEL _cmd) {
+              qs_log(@"TARGETS_VIEWDIDLOAD_BEGIN\n");
+              ((void(*)(id, SEL))class_getMethodImplementation(NSClassFromString(@"PSViewController"), NSSelectorFromString(@"viewDidLoad")))(self, _cmd);
+              qs_log(@"TARGETS_VIEWDIDLOAD_END\n");
+          }
           // v0.4.63: 目标 App 子页 —— QSTargetsController 列出全部应用开关（cell=6 已证），写入 target_<bundleID>
           static id qs_target_specifiers(id self) {
               qs_log(@"TARGETS_START\n");
@@ -553,6 +570,9 @@ jobs:
                   // v0.4.85: 目标应用子页 controller（仅 PSSwitchCell，绕开 link/detail 渲染崩溃）
                   Class sub2 = objc_allocateClassPair(ps, "QSTargetsController", 0);
                   if (sub2) {
+                      class_addMethod(sub2, @selector(init), (IMP)qs_t_init, "@@:");
+                      class_addMethod(sub2, NSSelectorFromString(@"loadView"), (IMP)qs_t_loadView, "v@:");
+                      class_addMethod(sub2, NSSelectorFromString(@"viewDidLoad"), (IMP)qs_t_viewDidLoad, "v@:");
                       class_addMethod(sub2, @selector(specifiers), (IMP)qs_target_specifiers, "@@:");
                       objc_registerClassPair(sub2);
                       qs_log(@"CLASS_REGISTERED QSTargetsController\n");
@@ -600,5 +620,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.86_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.87_iphoneos-arm64e.deb
           if-no-files-found: warn
