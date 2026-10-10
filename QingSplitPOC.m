@@ -569,41 +569,9 @@ static UIView *poc_make_host_view(id sceneLayer, NSInteger ctx, int *outPath) {
 // ----------------------------------------------------------------------------
 static UIView *poc_make_presenter_view(NSString *targetSid, id targetScene) {
     @try {
-        // v0.6.1: 主动创建 presenter（Stheno createPresenterWithIdentifier:priority: 写路径）
-        // 先做只读获取；拿不到 → 从 presentationManager 创建 presenter（呈现接管，主屏不切走）
-        id pm2 = poc_tryKVC(targetScene, @[@"_presentationManager", @"presentationManager", @"presentationManagerForVisibility", @"_presentationManagerForVisibility"]);
-        if (pm2) {
-            SEL cps = NSSelectorFromString(@"createPresenterWithIdentifier:priority:");
-            if ([pm2 respondsToSelector:cps]) {
-                NSString *pid = [NSString stringWithFormat:@"qing-float-%@", targetSid];
-                id presenter = nil;
-                @try {
-                    id (*fn)(id, SEL, id, NSInteger) = (id (*)(id, SEL, id, NSInteger))objc_msgSend;
-                    presenter = fn(pm2, cps, pid, 0);
-                } @catch (NSException *e) {
-                    poc_log(@"PRESENTER_CREATE_EXC %@", e.name);
-                }
-                if (presenter) {
-                    id pv = poc_tryKVC(presenter, @[@"presentationView", @"_presentationView", @"view"]);
-                    if (pv && [pv isKindOfClass:[UIView class]]) {
-                        poc_log(@"PRESENTER_CREATED_READY sid=%@ presenter=%@ pv=%@ pm=%@", targetSid, poc_cls(presenter), poc_cls(pv), poc_cls(pm2));
-                        return (UIView *)pv;
-                    }
-                    // presenter 已创建但 view 未就绪 —— 记入 KEEP 候选，渐进接管
-                    g_presenterCandidate = presenter;
-                    g_presenterCandidateSid = [targetSid copy];
-                    g_presenterCandidateAt = CACurrentMediaTime();
-                    poc_log(@"PRESENTER_CREATED_WAIT sid=%@ presenter=%@ (view pending — keep polling)", targetSid, poc_cls(presenter));
-                    return nil;
-                }
-                poc_log(@"PRESENTER_CREATE_NIL sid=%@ pm=%@", targetSid, poc_cls(pm2));
-            } else {
-                poc_log(@"PRESENTER_NO_SELECTOR sid=%@ pm=%@", targetSid, poc_cls(pm2));
-            }
-        } else {
-            poc_log(@"PRESENTER_NO_PM sid=%@", targetSid);
-        }
-        // 1) 先直接查 targetScene 的 presentationManager / presenter 链
+        // v0.6.2 探针实锤：scene 上无 presentationManager（只有 _layerManager/delegate）；
+        // presenter 链挂在 SB 容器上（_UISceneLayerHostContainerView → dataSource → presenter → pv）。
+        // v0.6.3: 直接查 targetScene 的 presentationManager / presenter 链（兼容，多数为 nil）
         id pm = poc_tryKVC(targetScene, @[@"_presentationManager", @"presentationManager", @"presentationManagerForVisibility", @"_presentationManagerForVisibility"]);
         if (pm) {
             id presenter = poc_tryKVC(pm, @[@"presenter", @"_presenter"]);
@@ -788,6 +756,43 @@ static void poc_probe_presenter_chain(NSString *targetSid, id targetScene) {
     } @catch (NSException *e) {
         poc_log(@"PROBE_EXC %@", e.name);
     }
+}
+
+// ----------------------------------------------------------------------------
+// v0.6.3: presenter 呈现接管（Stheno 式）—— 从 SB 容器链拿目标 app 的 presentationView
+// 探针实锤（v0.6.2）：窗口树里每个 _UISceneLayerHostContainerView → _dataSource
+//   (_UIScenePresentationView) → presenter(_UIScenePresenter) → presentationView
+// 复用 poc_search_sb_container 的查找路径（深度 20 + 三层 sceneID 解析，SCREEN_HIDE 已证明可命中）。
+// 把 presentationView 作为浮窗内容 view：系统管理远程 layer 映射，拖动/缩放只动 frame → 无残影；
+// 同时该 view 从 SB 树剥离 → SB 不再显示该 app 全屏 → 主屏保持前台 app，无跳转。
+// ----------------------------------------------------------------------------
+static UIView *poc_adopt_presenter_view(NSString *sid) {
+    if (!sid.length) return nil;
+    @try {
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            BOOL matched = NO;
+            UIView *node = poc_search_sb_container(w, sid, 0, &matched);
+            if (!node || !matched) continue;
+            // node 是 _UISceneLayerHostContainerView 或 _UIScenePresentationView → presenter → presentationView
+            id presenter = poc_tryKVC(node, @[@"presenter", @"_presenter"]);
+            if (!presenter) {
+                id ds = poc_tryKVC(node, @[@"_dataSource", @"dataSource"]);
+                presenter = poc_tryKVC(ds, @[@"presenter", @"_presenter"]);
+            }
+            if (!presenter) { poc_log(@"ADOPT_NOPRES sid=%@ node=%@", sid, poc_cls(node)); return nil; }
+            id pv = poc_tryKVC(presenter, @[@"presentationView", @"_presentationView", @"view"]);
+            if (!pv || ![pv isKindOfClass:[UIView class]]) {
+                poc_log(@"ADOPT_NOPV sid=%@ presenter=%@", sid, poc_cls(presenter));
+                return nil;
+            }
+            poc_log(@"ADOPT_FOUND sid=%@ node=%@ presenter=%@ pv=%@", sid, poc_cls(node), poc_cls(presenter), poc_cls(pv));
+            return (UIView *)pv;
+        }
+        poc_log(@"ADOPT_NOCONTAINER sid=%@", sid);
+    } @catch (NSException *e) {
+        poc_log(@"ADOPT_EXC %@", e.name);
+    }
+    return nil;
 }
 
 // ----------------------------------------------------------------------------
@@ -1634,6 +1639,7 @@ static const void *kWinPendingCtx = &kWinPendingCtx; // v0.5.4: 候选切换 ctx
 static const void *kWinPendingN = &kWinPendingN;     // v0.5.4: 候选连续 tick 数
 static const void *kWinOwner = &kWinOwner;     // container → 所属 UIWindow
 static const void *kWinSidOwner = &kWinSidOwner;  // container → 所属 sid
+static const void *kWinAdopted = &kWinAdopted;  // v0.6.3: 本窗已完成 presenter 呈现接管（防重复）
 static void win_set(UIWindow *w, const void *key, id val) {
     if (w) objc_setAssociatedObject(w, key, val, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -2284,37 +2290,34 @@ static void poc_probe_scene_apis(id scene) {
 // v0.1.8: 保持模式 —— 切换应用后 scene layer 可能被系统重建（contextID 漂移），
 // 每 3s 检测：窗口存活 / host 存活 / contextID 变化 → 自动重建 host view
 static void poc_keep_float(void) {
-    // v0.6.1: presenter 渐进接管 —— 候选 presenter 的 view 就绪后替换 legacy hostView
-    // （系统管理 layer → 拖动/缩放不再手动重映射 → 残影消失）
-    if (g_presenterCandidate && g_container) {
+    // v0.6.3: presenter 呈现接管 —— 目标 app 的 SB 容器出现后，用其 presentationView
+    // 替换 legacy hostView（系统管理 layer → 无残影；SB 不再全屏显示该 app → 无跳转）
+    if (g_win && g_container && !win_get(g_win, kWinAdopted)) {
         @try {
-            if (CACurrentMediaTime() - g_presenterCandidateAt > 15.0) {
-                poc_log(@"PRESENTER_ADOPT_TIMEOUT sid=%@", g_presenterCandidateSid);
-                g_presenterCandidate = nil;
-                g_presenterCandidateSid = nil;
-            } else {
-                id pv = poc_tryKVC(g_presenterCandidate, @[@"presentationView", @"_presentationView", @"view"]);
-                if (pv && [pv isKindOfClass:[UIView class]]) {
-                    UIView *newHost = (UIView *)pv;
-                    // 旧 host 移除，新 host 加入容器（位置/尺寸由容器 layout 控制）
-                    if (g_hostView && g_hostView.superview == g_container) [g_hostView removeFromSuperview];
-                    g_hostView = newHost;
-                    newHost.frame = g_container.bounds;
-                    newHost.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                    [g_container addSubview:newHost];
-                    [g_container sendSubviewToBack:newHost];
-                    g_container.userInteractionEnabled = YES;
-                    // 替换窗口记忆里的 hostView
-                    if (g_win) win_set(g_win, kWinHostView, g_hostView);
-                    poc_log(@"PRESENTER_ADOPT sid=%@ pv=%@ (legacy host replaced — system-managed layer)", g_presenterCandidateSid, poc_cls(pv));
-                    g_presenterCandidate = nil;
-                    g_presenterCandidateSid = nil;
+            NSString *wsid = win_get(g_win, kWinSid);
+            if (wsid.length) {
+                UIView *pv = poc_adopt_presenter_view(wsid);
+                if (pv) {
+                    if (g_hostView && g_hostView != pv && g_hostView.superview == g_container) {
+                        [g_hostView removeFromSuperview];
+                    }
+                    if (pv.superview != g_container) {
+                        [pv setHidden:NO];          // 可能被 SCREEN_HIDE setHidden:YES，接管后恢复显示
+                        [pv removeFromSuperview];   // 从 SB 树剥离 → SB 不再显示该 app 全屏
+                        pv.frame = g_container.bounds;
+                        pv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                        [g_container addSubview:pv];
+                        [g_container sendSubviewToBack:pv];
+                        g_container.userInteractionEnabled = YES;
+                    }
+                    g_hostView = pv;
+                    win_set(g_win, kWinHostView, g_hostView);
+                    win_set(g_win, kWinAdopted, @YES);
+                    poc_log(@"ADOPT_OK sid=%@ pv=%@ — system-managed layer, no ghosting", wsid, poc_cls(pv));
                 }
             }
         } @catch (NSException *e) {
-            poc_log(@"PRESENTER_ADOPT_EXC %@", e.name);
-            g_presenterCandidate = nil;
-            g_presenterCandidateSid = nil;
+            poc_log(@"ADOPT_KEEP_EXC %@", e.name);
         }
     }
     @try {
