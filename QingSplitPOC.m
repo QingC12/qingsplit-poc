@@ -2357,24 +2357,20 @@ static void poc_keep_float(void) {
             if (wsid.length) {
                 UIView *pv = poc_adopt_presenter_view(wsid);
                 if (pv) {
-                    if (g_hostView && g_hostView != pv && g_hostView.superview == g_container) {
-                        [g_hostView removeFromSuperview];
+                    // v0.6.5: 记录原 superview/index —— 关闭时放回，恢复 SB 呈现（防触摸瘫痪）
+                    win_set(g_win, kWinAdoptedFrom, pv.superview);
+                    UIView *pf = pv.superview;
+                    win_set(g_win, kWinAdoptedIdx, pf ? @([pf.subviews indexOfObject:pv]) : @(0));
+                    [pv setHidden:NO];   // 可能被 SCREEN_HIDE setHidden:YES，接管后恢复显示
+                    if (g_hostView != pv) {
+                        // v0.6.6: 走 setContentView 替换 —— setter 自动移除旧 hostView（legacy
+                        // _UIContextLayerHostView）并挂到 contentWrapper，复用既有布局/圆角/手势链。
+                        // 旧实现直接 addSubview 到容器 → 旧 hostView 未移除（hostView 实际挂 wrapper）
+                        // → 同一浮窗内两个内容视图重叠 + 缩放手势失效
+                        g_container.contentView = pv;   // setter: 移除旧 contentView + addSubview wrapper
+                        g_hostView = pv;
+                        win_set(g_win, kWinHostView, g_hostView);
                     }
-                    if (pv.superview != g_container) {
-                        // v0.6.5: 记录原 superview/index —— 关闭时放回，恢复 SB 呈现（防触摸瘫痪）
-                        win_set(g_win, kWinAdoptedFrom, pv.superview);
-                        UIView *pf = pv.superview;
-                        win_set(g_win, kWinAdoptedIdx, pf ? @([pf.subviews indexOfObject:pv]) : @(0));
-                        [pv setHidden:NO];          // 可能被 SCREEN_HIDE setHidden:YES，接管后恢复显示
-                        [pv removeFromSuperview];   // 从 SB 树剥离 → SB 不再显示该 app 全屏
-                        pv.frame = g_container.bounds;
-                        pv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-                        [g_container addSubview:pv];
-                        [g_container sendSubviewToBack:pv];
-                        g_container.userInteractionEnabled = YES;
-                    }
-                    g_hostView = pv;
-                    win_set(g_win, kWinHostView, g_hostView);
                     win_set(g_win, kWinAdopted, @YES);
                     poc_log(@"ADOPT_OK sid=%@ pv=%@ — system-managed layer, no ghosting", wsid, poc_cls(pv));
                 }
