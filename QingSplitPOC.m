@@ -997,6 +997,7 @@ static NSTimeInterval s_tapT0 = 0;
             f.origin.x = s_mFrame.origin.x;   // 左侧锚定
         }
         self.frame = f;
+    }
     static NSTimeInterval lastM = 0;
     NSTimeInterval nowM = [[NSProcessInfo processInfo] systemUptime];
     if (nowM - lastM > 0.2) { lastM = nowM; poc_log(@"MTOUCH_MOVED mode=%d f=%@", s_mMode, NSStringFromCGRect(self.frame)); }
