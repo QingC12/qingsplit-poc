@@ -383,12 +383,12 @@ jobs:
           static void qs_t_sw_changed(id self, SEL _cmd, id sw) {
               long idx = [(UIView*)sw tag];
               NSArray *apps = qs_apps_cache();
-              if (idx < 0 || idx >= (long)[apps count]) return;
+              if (idx < 0 || idx >= (long)[apps count]) { qs_log(@"TARGET_SW_BADROW %ld\n", idx); return; }
               NSString *bid = apps[idx][@"bundle"];
               NSString *key = [@"target_" stringByAppendingString:bid];
               BOOL on = [(UISwitch*)sw isOn];
-              CFPreferencesSetAppValue((__bridge CFStringRef)key, on ? kCFBooleanTrue : kCFBooleanFalse, CFSTR("com.qingsplit.poc"));
-              CFPreferencesAppSynchronize(CFSTR("com.qingsplit.poc"));
+              // v0.4.93: 复用 qs_write_cfg 完整链路 —— CF + 文件双写 + targets 聚合字符串（SpringBoard 读 CFPreferences targets 才可见）
+              qs_write_cfg(key, on ? @YES : @NO);
               qs_log(@"TARGET_SW key=%@ on=%d\n", key, on);
           }
           static NSArray *qs_apps_cache(void) {
@@ -758,5 +758,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.92_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.93_iphoneos-arm64e.deb
           if-no-files-found: warn
