@@ -2121,7 +2121,15 @@ static UIView *poc_find_sb_container(NSString *sid) {
     BOOL matched = NO;
     for (UIWindow *w in ws) {
         UIView *r = poc_search_sb_container(w, sid, 0, &matched);
-        if (r) return r;
+        if (!r) continue;
+        // v0.6.7: 跳过已被 ADOPT 接管的 view（它在浮窗窗口树里，隐藏它会隐藏浮窗内容）——
+        // 只隐藏 SB 主屏重建的全屏呈现容器（防跳转双显示）
+        BOOL inFloat = NO;
+        for (UIWindow *fw in g_wins) {
+            if (win_get(fw, kWinHostView) == r) { inFloat = YES; break; }
+        }
+        if (inFloat) continue;
+        return r;
     }
     return nil;
 }
@@ -2175,10 +2183,16 @@ static void poc_unadopt_window(UIWindow *w) {
                     } else {
                         [from addSubview:pv];
                     }
+                    // v0.6.7: 放回后恢复全屏布局（接管时被改成浮窗尺寸 → 主屏左上角小窗）
+                    pv.frame = from.bounds;
+                    pv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                    [from setNeedsLayout];
+                    [from layoutIfNeeded];
                     putBack = YES;
-                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@", win_get(w, kWinSid), poc_cls(from));
+                    poc_log(@"UNADOPT_OK sid=%@ putBack=%@ frame=%@", win_get(w, kWinSid), poc_cls(from), NSStringFromCGRect(from.bounds));
                 } @catch (NSException *e) {
                     [from addSubview:pv];
+                    pv.frame = from.bounds;
                     putBack = YES;
                     poc_log(@"UNADOPT_INSERT_EXC %@ → addSubview", e.name);
                 }
@@ -2542,8 +2556,7 @@ static void poc_keep_float(void) {
         // v0.5.4: 多窗（>=2）时不 hide —— hide 会让 scene 失活、系统回收其 layer（v0.5.3 实锤：
         // 开第 2 窗后第 1 窗 app lc=0 黑屏）。单窗时保留主屏回退原行为
         if (g_lastSid && newCtx > 0 && g_sbContainer == nil && g_wins.count <= 1
-            && poc_setting_bool(@"screenHide", YES)
-            && !win_get(g_win, kWinAdopted)) {   // v0.6.4: ADOPT 接管后不再 hide
+            && poc_setting_bool(@"screenHide", YES)) {   // v0.6.7: 恢复 hide（find 已跳过浮窗树）
             poc_screen_hide(g_lastSid);
         }
         // v0.2.0: 空窗（layer 被释放）时探测 scene 激活 API 面 —— 只一次
@@ -2958,9 +2971,8 @@ static void poc_try_float(void) {
         UIWindow *wRef = g_win;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (![g_wins containsObject:wRef]) return;
-            // v0.6.4: presenter 接管后跳过 SCREEN_HIDE —— ADOPT 已把 presentationView 挪进浮窗，
-            // 此时再 hide 会把刚接管的 view 隐藏（浮窗窗口也在 windows 树，search 会重新命中）
-            if (win_get(wRef, kWinAdopted)) return;
+            // v0.6.7: SCREEN_HIDE 重新启用 —— poc_find_sb_container 已跳过浮窗树内被接管的 view，
+            // 只隐藏 SB 主屏重建的全屏呈现（防跳转后双显示）；不影响浮窗内容
             g_win = wRef;
             g_sbContainer = win_get(wRef, kWinSB);
             poc_screen_hide(sid);
