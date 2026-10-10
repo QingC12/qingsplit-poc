@@ -885,19 +885,28 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     }
     self.contentWrapper.frame = inner;
     if (cv.superview != self.contentWrapper) [self.contentWrapper addSubview:cv];
+    // v0.5.15: chrome 提到最上层 —— wrapper 每次 layout 都会 addSubview 盖住关闭按钮/把手，
+    // 导致右上角关闭按钮收不到触摸（实锤：日志无任何 mode=0/CLOSE_TAP）
+    if (_closeBtn) [self bringSubviewToFront:_closeBtn];
+    if (_knobL) [self bringSubviewToFront:_knobL];
+    if (_knobR) [self bringSubviewToFront:_knobR];
+    if (_gripBottom) [self bringSubviewToFront:_gripBottom];
+    UIView *topBtn = [self viewWithTag:779];
+    if (topBtn) [self bringSubviewToFront:topBtn];
     CGSize native = self.nativeContentSize;
     if (native.width > 0 && native.height > 0) {
-        // v0.4.12: contain → fill —— 内容填满窗口（MAX 缩放 + 裁剪），消除细长窗上下/左右大留白
-        // 列表类 App（酷安/Filza 单列布局）中间列正好全显示；clipsToBounds 负责裁剪
+        // v0.5.15: fill(MAX 裁剪) → contain(MIN 完整显示) —— 细长条窗口 fill 会左右/上下裁剪内容
+        // （实锤：aspect≈1.97 细长窗 h-fit 横向裁掉内容一半），用户反馈"比例不正常"= 内容被裁
+        // contain 完整等比显示，留白透明（wrapper 透明 → 主屏透出），不变形不裁剪
         CGFloat sx = inner.size.width / native.width;
         CGFloat sy = inner.size.height / native.height;
-        CGFloat s = MAX(sx, sy);
+        CGFloat s = MIN(sx, sy);
         if (s > 0) {
             cv.bounds = CGRectMake(0, 0, native.width, native.height);
             cv.center = CGPointMake(CGRectGetMidX(self.contentWrapper.bounds), CGRectGetMidY(self.contentWrapper.bounds));
             cv.transform = CGAffineTransformMakeScale(s, s);
         }
-        poc_log(@"CONTENT_FILL %@ s=%.3f", (sx > sy) ? @"w-fit" : @"h-fit", s);
+        poc_log(@"CONTENT_FILL %@ s=%.3f", (sx < sy) ? @"w-fit" : @"h-fit", s);
     } else {
         cv.frame = self.contentWrapper.bounds;
         cv.transform = CGAffineTransformIdentity;
@@ -949,6 +958,7 @@ static NSTimeInterval s_tapT0 = 0;
     if (_closeBtn && !_closeBtn.hidden && CGRectContainsPoint(_closeBtn.frame, p)) {
         s_mTouch = t; s_mMode = 0; s_mStart = p; s_mFrame = self.frame; s_mT0 = CACurrentMediaTime();
         s_dragLock = NO;
+        poc_log(@"BTN_CLOSE_HIT p=(%.0f,%.0f) btn=%@", p.x, p.y, NSStringFromCGRect(_closeBtn.frame));
         return;
     }
     s_mTouch = t;
@@ -3480,7 +3490,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.14 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.15 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
