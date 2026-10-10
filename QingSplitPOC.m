@@ -869,6 +869,9 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (_gripBottom) _gripBottom.frame = CGRectMake((b.size.width - 16) / 2.0, b.size.height - 26, 16, 16);
     UIView *cv = self.contentView;
     if (!cv) return;
+    // v0.5.14: 拖动锁 —— 拖动（mode=1）只改 origin、bounds 不变 → 内容随容器整体移动，
+    // 跳过 contentWrapper/cv 的 transform 重算（每帧重算 = 远程 layer 重映射 = 残影源）
+    if (s_dragLock) return;
     // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
     CGRect inner = CGRectInset(self.bounds, 24, 24);
     // v0.5.6: wrapper 严格限定内容区 → host view 放大几何不覆盖手势带/关闭按钮/把手
@@ -934,6 +937,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 // ---- v0.5.10 手动触摸处理（拖动/角落缩放/双击重置；内容区穿透）----
 static UITouch *s_mTouch = nil;
 static int s_mMode = 0;          // 0=none 1=drag 2=cornerL 3=cornerR 4=pass
+static BOOL s_dragLock = NO;     // v0.5.14: 拖动锁 —— 拖动中跳过内容 transform 重算（防残影）
 static CGPoint s_mStart;         // 起点（容器坐标）
 static CGRect  s_mFrame;         // 起始 frame
 static NSTimeInterval s_mT0;     // 起始时间
@@ -944,6 +948,7 @@ static NSTimeInterval s_tapT0 = 0;
     // v0.5.13: 关闭按钮优先 —— 触摸在关闭按钮上 → 不手动处理（mode=0），系统派发会把触摸交给按钮
     if (_closeBtn && !_closeBtn.hidden && CGRectContainsPoint(_closeBtn.frame, p)) {
         s_mTouch = t; s_mMode = 0; s_mStart = p; s_mFrame = self.frame; s_mT0 = CACurrentMediaTime();
+        s_dragLock = NO;
         return;
     }
     s_mTouch = t;
@@ -956,6 +961,7 @@ static NSTimeInterval s_tapT0 = 0;
     else if (p.x > w - 44 && p.y > h - 44)   s_mMode = 3;   // 右下角缩放
     else if (p.y < 44 || p.y > h - 72 || p.x < 16 || p.x > w - 16) s_mMode = 1;  // 拖动带
     else s_mMode = 4;                        // 内容区（穿透）
+    s_dragLock = (s_mMode == 1);             // v0.5.14: 拖动锁（拖动中跳过内容重算防残影）
     static NSTimeInterval lastB = 0;
     NSTimeInterval nowB = [[NSProcessInfo processInfo] systemUptime];
     if (nowB - lastB > 0.2) { lastB = nowB; poc_log(@"MTOUCH_BEGAN mode=%d p=(%.0f,%.0f)", s_mMode, p.x, p.y); }
@@ -970,14 +976,15 @@ static NSTimeInterval s_tapT0 = 0;
         CGFloat minY = 60 - f.size.height, maxY = 932 - 60;
         f.origin.x = MAX(minX, MIN(f.origin.x, maxX));
         f.origin.y = MAX(minY, MIN(f.origin.y, maxY));
+        // v0.5.14: 拖动只改 origin（bounds 不变）→ 内容 view 随容器移动，不重算 transform；
+        // 移除 v0.5.13 的 layoutIfNeeded（每帧重算 cv transform + 远程 layer 重映射 = 残影源）
         self.frame = f;
-        [self layoutIfNeeded];   // v0.5.13: 拖动中同步内容布局，减少远程 layer 残影
     } else {   // 角落缩放（v0.5.13: 等比例 —— 宽高比锁定起始比例，内容不拉伸变形；最小 120×160）
         CGFloat aspect = s_mFrame.size.height / s_mFrame.size.width;
         CGFloat dx = p.x - s_mStart.x, dy = p.y - s_mStart.y;
         CGRect f = s_mFrame;
-        if (s_mMode == 2) {   // 左下角：顶部锚定，左/底随动
-            CGFloat nw = MAX(120, s_mFrame.size.width + dx);
+        if (s_mMode == 2) {   // 左下角：顶部锚定，左/底随动 —— v0.5.14: 方向修正（左缘随手指，右移→左缘右移→变窄）
+            CGFloat nw = MAX(120, s_mFrame.size.width - dx);
             CGFloat nh = nw * aspect;
             if (nh < 160) { nh = 160; nw = nh / aspect; }
             f.size.width = nw; f.size.height = nh;
@@ -990,8 +997,6 @@ static NSTimeInterval s_tapT0 = 0;
             f.origin.x = s_mFrame.origin.x;   // 左侧锚定
         }
         self.frame = f;
-        [self layoutIfNeeded];   // v0.5.13: 同步内容布局，减少远程 layer 残影
-    }
     static NSTimeInterval lastM = 0;
     NSTimeInterval nowM = [[NSProcessInfo processInfo] systemUptime];
     if (nowM - lastM > 0.2) { lastM = nowM; poc_log(@"MTOUCH_MOVED mode=%d f=%@", s_mMode, NSStringFromCGRect(self.frame)); }
@@ -1010,7 +1015,10 @@ static NSTimeInterval s_tapT0 = 0;
     if (s_mMode == 1) {   // 拖动结束 → 保存记忆
         CGRect f = self.frame;
         poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, f);
+    } else if (s_mMode == 2 || s_mMode == 3) {
+        [self setNeedsLayout];   // v0.5.14: 缩放结束重算内容布局（拖动锁解除后）
     }
+    s_dragLock = NO;             // v0.5.14: 解锁
     s_mTouch = nil;
     s_mMode = 0;
     static NSTimeInterval lastE = 0;
@@ -1408,12 +1416,15 @@ static BOOL poc_hooked_gsb(id self, SEL _cmd, id gr) {
 }
 // v0.5.11: UIApplication sendEvent 探针 —— 触摸路由实测
 static void (*g_orig_appSend)(id, SEL, id) = NULL;
+static NSTimeInterval s_lastAnyTouch = 0;   // v0.5.14: 任意触摸时间戳（触摸黑洞兜底用）
+static NSTimeInterval s_lastFallback = 0;
 static void qs_appSend(id self, SEL _cmd, UIEvent *event) {
     @try {
         NSSet *ts = event.allTouches;
         UITouch *t = [ts anyObject];
         if (t) {
             CGPoint p = [t locationInView:nil];
+            s_lastAnyTouch = [[NSProcessInfo processInfo] systemUptime];
             // v0.5.12: 触摸路由兜底 —— 触摸落在任一浮窗容器内 → 手动转发给浮窗窗口
             // （iOS17 只把事件给 keyWindow；makeKey 后浮窗即 key，此兜底覆盖非 key 浮窗/遍历不完整场景）
             if (g_wins.count) {
@@ -2148,6 +2159,16 @@ static void poc_keep_float(void) {
         } @catch (NSException *e) { }
         poc_log(@"KEEP winAlive=%d hostAlive=%d act=%@ ctx=%ld last=%ld lc=%ld native=%@ src=%@", winAlive, hostAlive,
                 actStr, (long)newCtx, (long)g_lastCtx, (long)lc, NSStringFromCGSize(kn), ksrc);
+        // v0.5.14: keyWindow 变化监控 —— 触摸路由实测（Stheno 等外部插件抢 key 时可见）
+        @try {
+            UIWindow *kw = [UIApplication sharedApplication].keyWindow;
+            NSString *kcn = kw ? NSStringFromClass([kw class]) : @"nil";
+            static NSString *s_lastKey = nil;
+            if (!s_lastKey || ![s_lastKey isEqualToString:kcn]) {
+                s_lastKey = [kcn copy];
+                poc_log(@"KEY_CHANGE key=%@", kcn);
+            }
+        } @catch (NSException *e) { }
         // v0.3.14: app 重新打开（layer 重新出现）后，再次执行主屏回退 ——
         // SCREEN_HIDE 只在首次建窗时执行一次，lc=0 恢复显示后（SCREEN_SHOW_RESTORE）需重新隐藏
         // poc_screen_hide 幂等（g_sbContainer 非 nil 自动跳过；找不到只日志），每 3s 调用安全
@@ -2196,6 +2217,17 @@ static void poc_keep_float(void) {
                 poc_log(@"HOST_REFRESH_OK path=%d", path);
             } else {
                 poc_log(@"HOST_REFRESH_FAIL path=0");
+            }
+        }
+        // v0.5.14: 触摸黑洞兜底 —— 浮窗可见但长时间无任何触摸事件进入 UIApplication
+        // （屏幕疑似被完全锁死/手势被外部插件劫持到连 sendEvent 都不触发）→ 自动关闭全部浮窗恢复主屏
+        if (g_wins.count && s_lastAnyTouch > 0) {
+            NSTimeInterval nowT = [[NSProcessInfo processInfo] systemUptime];
+            if (nowT - s_lastAnyTouch > 25.0 && nowT - s_lastFallback > 30.0) {
+                s_lastFallback = nowT;
+                poc_log(@"FALLBACK_AUTO no-touch %.0fs — close all (screen unresponsive guard)",
+                        nowT - s_lastAnyTouch);
+                poc_close_all_windows();
             }
         }
     } @catch (NSException *e) {
@@ -3447,7 +3479,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.13 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.14 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
