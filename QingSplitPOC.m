@@ -2242,13 +2242,6 @@ static void poc_unadopt_window(UIWindow *w) {
         BOOL putBack = NO;
         if (pv) {
             [pv setHidden:NO];
-            // v0.6.8: 原容器可能已被系统释放/重建（不在窗口树）→ 重找当前该 app 呈现容器
-            UIView *target = (from && poc_view_in_window_tree(from)) ? from : nil;
-            if (!target) {
-                NSString *wsid = win_get(w, kWinSid);
-                if (wsid.length) target = poc_find_sb_container(wsid);   // 跳过浮窗树内被接管 view
-                if (target) poc_log(@"UNADOPT_RESEARCH sid=%@ newFrom=%@", wsid, poc_cls(target));
-            }
             // v0.6.15: 关闭浮窗 = 回主屏 —— pv 隐藏放回（无左上角残留；v0.6.14 实锤放哪都
             // 停留在接管时状态，view 层无法恢复全屏），延迟 LS 激活建窗前的前台 app（豆包）
             // → 主屏正常显示豆包；目标 app 留后台，用户需要时切换器/选择器再开。
