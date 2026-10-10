@@ -577,7 +577,19 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
 @property (nonatomic, strong) UIView *contentView;
 // v0.3.3: hosted scene layer 的原始尺寸（native）——_UIContextLayerHostView 内容按此渲染，不随 frame 拉伸
 @property (nonatomic, assign) CGSize nativeContentSize;
+@property (nonatomic, strong) UIView *contentWrapper;   // v0.5.6: 内容 wrapper —— host view 限制在内容区内，
+                                                 // 不覆盖 24pt 边框手势带（v0.5.5 实锤：fill 放大盖满容器 → 手势全失效）
 @end
+@interface QSWrapperView : UIView   // v0.5.6: 内容 wrapper —— 空白穿透 + 限制 host 几何
+@end
+@implementation QSWrapperView
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *h = [super hitTest:point withEvent:event];
+    if (h == self) return nil;   // wrapper 自身空白 → 穿透（内容由 subview host view 命中）
+    return h;
+}
+@end
+
 @implementation QSFloatContainer {
     UIPanGestureRecognizer *_pan;
     UIPinchGestureRecognizer *_pinch;
@@ -605,9 +617,16 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
             // v0.4.25: 圆角 40（内容视图同步裁剪）
             cv.layer.cornerRadius = 40;
             cv.layer.masksToBounds = YES;
-            [self addSubview:cv];
-            // v0.4.28: 内容垫底 —— 底部拖动条/关闭/角落把手/手势指示不被 host 内容遮挡
-            [self sendSubviewToBack:cv];
+            // v0.5.6: host view 挂 wrapper —— wrapper 严格 = 内容区（inset 24），fill 放大几何被限制
+            if (!self.contentWrapper) {
+                self.contentWrapper = [[QSWrapperView alloc] initWithFrame:CGRectZero];
+                self.contentWrapper.userInteractionEnabled = YES;
+                self.contentWrapper.clipsToBounds = YES;
+                self.contentWrapper.layer.cornerRadius = 40;
+                self.contentWrapper.layer.masksToBounds = YES;
+                [self addSubview:self.contentWrapper];
+            }
+            [self.contentWrapper addSubview:cv];
         }
         [self setNeedsLayout];
     }
@@ -770,6 +789,17 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (!cv) return;
     // 内容区内边距 24（边框拖动区，v0.3.6 加宽 —— 用户实测 14px 不易操作）
     CGRect inner = CGRectInset(self.bounds, 24, 24);
+    // v0.5.6: wrapper 严格限定内容区 → host view 放大几何不覆盖手势带/关闭按钮/把手
+    if (!self.contentWrapper) {
+        self.contentWrapper = [[QSWrapperView alloc] initWithFrame:CGRectZero];
+        self.contentWrapper.userInteractionEnabled = YES;
+        self.contentWrapper.clipsToBounds = YES;
+        self.contentWrapper.layer.cornerRadius = 40;
+        self.contentWrapper.layer.masksToBounds = YES;
+        [self addSubview:self.contentWrapper];
+    }
+    self.contentWrapper.frame = inner;
+    if (cv.superview != self.contentWrapper) [self.contentWrapper addSubview:cv];
     CGSize native = self.nativeContentSize;
     if (native.width > 0 && native.height > 0) {
         // v0.4.12: contain → fill —— 内容填满窗口（MAX 缩放 + 裁剪），消除细长窗上下/左右大留白
@@ -779,12 +809,12 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         CGFloat s = MAX(sx, sy);
         if (s > 0) {
             cv.bounds = CGRectMake(0, 0, native.width, native.height);
-            cv.center = CGPointMake(CGRectGetMidX(inner), CGRectGetMidY(inner));
+            cv.center = CGPointMake(CGRectGetMidX(self.contentWrapper.bounds), CGRectGetMidY(self.contentWrapper.bounds));
             cv.transform = CGAffineTransformMakeScale(s, s);
         }
         poc_log(@"CONTENT_FILL %@ s=%.3f", (sx > sy) ? @"w-fit" : @"h-fit", s);
     } else {
-        cv.frame = inner;
+        cv.frame = self.contentWrapper.bounds;
         cv.transform = CGAffineTransformIdentity;
     }
 }
@@ -802,6 +832,7 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
     if (h == self) return self;   // 边框 → 容器（手势）
     return h;                     // 内容 → app
 }
+// v0.5.6: contentWrapper —— 空白区（host 内容未覆盖处）穿透，不拦截下层窗/主屏触摸
 // v0.3.1: Pan 限边框起点；Pinch 始终允许（双指中点常落内容区，原判定会误拒）
 // v0.3.3: 判定直接用 inset 内容区（transform 下 contentView.frame 不再等于 inset 区域）
 // v0.3.6: inset 与 layoutSubviews 同步 24px
@@ -2945,7 +2976,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.5 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.6 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
