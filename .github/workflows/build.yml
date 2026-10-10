@@ -331,6 +331,8 @@ jobs:
               if (ph) setProp(spec, spSel, ph, @"placeholder");
               id ft = [dict objectForKey:@"footerText"];
               if (ft) setProp(spec, spSel, ft, @"footerText");
+              id ict = [dict objectForKey:@"isController"];
+              if (ict) setProp(spec, spSel, ict, @"isController");
               if (key) {
                   objc_setAssociatedObject(spec, &kKeyAO, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                   // identifier 存 qs_<key>：走 setIdentifier: setter（copy 属性，副本保留），写入/读回都从它取 key
@@ -383,34 +385,19 @@ jobs:
               @try { [self setValue:arr forKey:@"_specifiers"]; } @catch (NSException *e) {}
               return arr;
           }
-          // v0.4.65: 目标应用开关直接内嵌主设置页（link/detail 子页在 iOS17 手动 spec 下 CFSet 检查崩溃，废弃）
-          // v0.4.83: Root.plist 已含"目标应用"组头（index2）→ 开关统一插入其后（index=3），消除重复分组、真正收纳
+          // v0.4.85: 借鉴 Myrtle —— 主页只保留"目标应用"入口（PSLinkCell→子页 QSTargetsController）
+          // 子页仅含 PSSwitchCell（渲染安全，主页 79 开关已验证）；不再平铺 79 开关，实现真正的父目录
           static void qs_add_target_switches(NSMutableArray *arr, Class PS, id self) {
               @try {
-                  Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-                  if (!wsCls) { qs_log(@"TARGETS_WS MISSING\n"); return; }
-                  id ws = [wsCls performSelector:@selector(defaultWorkspace)];
-                  NSArray *apps = [ws performSelector:@selector(allApplications)];
-                  qs_log(@"TARGETS_APPS %lu\n", (unsigned long)[apps count]);
-                  NSMutableArray *sw = [NSMutableArray array];
-                  for (id proxy in apps) {
-                      NSString *bid = [proxy performSelector:@selector(bundleIdentifier)];
-                      NSString *name = [proxy performSelector:@selector(localizedName)];
-                      if (!bid.length || !name.length) continue;
-                      if ([bid hasPrefix:@"com.apple."] && ![bid isEqualToString:@"com.apple.Preferences"]) continue;
-                      NSDictionary *d = @{@"cell":@"PSSwitchCell", @"label":name,
-                                          @"key":[@"target_" stringByAppendingString:bid],
-                                          @"defaults":@"com.qingsplit.poc"};
-                      id spec = qs_mk_spec(PS, self, d);
-                      if (spec) [sw addObject:spec];
-                  }
-                  qs_log(@"TARGETS_SW %lu\n", (unsigned long)[sw count]);
-                  // 插入到"目标应用"组头（index 2）之后 —— 视觉上全部开关收纳在该分组下
+                  NSDictionary *entry = @{@"cell":@"PSLinkCell", @"label":@"目标应用",
+                                          @"detail":@"QSTargetsController", @"isController":@YES};
+                  id es = qs_mk_spec(PS, self, entry);
+                  if (!es) { qs_log(@"TARGETS_ENTRY_FAIL\n"); return; }
+                  // 插入到"目标应用"组头（index 2）之后
                   NSUInteger ins = 3;
                   if ((NSUInteger)[arr count] < ins) ins = (NSUInteger)[arr count];
-                  NSIndexSet *is = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(ins, [sw count])];
-                  [arr insertObjects:sw atIndexes:is];
-                  qs_log(@"TARGETS_INSERTED at=%lu count=%lu\n", (unsigned long)ins, (unsigned long)[sw count]);
+                  [arr insertObject:es atIndex:ins];
+                  qs_log(@"TARGETS_ENTRY_INSERTED at=%lu\n", (unsigned long)ins);
               } @catch (NSException *e) { qs_log(@"TARGETS_EXC %@\n", e.name); }
           }
           static id qs_specifiers(id self, SEL _cmd) {
@@ -559,6 +546,13 @@ jobs:
                   class_addMethod(sub, @selector(specifiers), (IMP)qs_specifiers, "@@:");
                   objc_registerClassPair(sub);
                   qs_log(@"CLASS_REGISTERED QingSplitPrefsRootListController\n");
+                  // v0.4.85: 目标应用子页 controller（仅 PSSwitchCell，绕开 link/detail 渲染崩溃）
+                  Class sub2 = objc_allocateClassPair(ps, "QSTargetsController", 0);
+                  if (sub2) {
+                      class_addMethod(sub2, @selector(specifiers), (IMP)qs_target_specifiers, "@@:");
+                      objc_registerClassPair(sub2);
+                      qs_log(@"CLASS_REGISTERED QSTargetsController\n");
+                  }
               } else {
                   qs_log(@"CLASS_EXISTS\n");
               }
@@ -602,5 +596,5 @@ jobs:
         with:
           name: QingSplitPOC-deb
           path: |
-            QingSplitPOC_0.4.84_iphoneos-arm64e.deb
+            QingSplitPOC_0.4.85_iphoneos-arm64e.deb
           if-no-files-found: warn
