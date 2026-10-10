@@ -128,6 +128,42 @@ static BOOL poc_msgSend_setActivePrioritizedPresenter(id owner, id presenter) {
             poc_log(@"WIN_SENDEVENT no-touch");
         }
     }
+    // v0.5.10: 手动派发兜底 —— 若系统触摸派发被 SB 手势拦截（v0.5.8 实锤 touches=0），
+    // 这里在 window 层收到事件后直接驱动容器手动触摸处理（拖动/角落缩放/双击）。
+    // 容器侧用同一 UITouch 指针去重，避免与系统派发双执行。
+    @try {
+        NSSet *ts = event.allTouches;
+        UITouch *t = [ts anyObject];
+        if (t) {
+            CGPoint p = [t locationInView:self];
+            UIView *hv = [self hitTest:p withEvent:event];
+            id c = nil;
+            for (UIView *v = hv; v; v = v.superview) {
+                if ([NSStringFromClass([v class]) isEqualToString:@"QSFloatContainer"]) { c = v; break; }
+            }
+            if (c) {
+                CGPoint cp = [t locationInView:(UIView *)c];
+                switch (t.phase) {
+                    case UITouchPhaseBegan:
+                        if ([c respondsToSelector:@selector(pocHandleTouchBegan:point:)])
+                            [c pocHandleTouchBegan:t point:cp];
+                        break;
+                    case UITouchPhaseMoved:
+                        if ([c respondsToSelector:@selector(pocHandleTouchMoved:point:)])
+                            [c pocHandleTouchMoved:t point:cp];
+                        break;
+                    case UITouchPhaseEnded:
+                    case UITouchPhaseCancelled:
+                        if ([c respondsToSelector:@selector(pocHandleTouchEnded:)])
+                            [c pocHandleTouchEnded:t];
+                        break;
+                    default: break;
+                }
+            }
+        }
+    } @catch (NSException *e) {
+        poc_log(@"WIN_MANUAL_EXC %@", e.name);
+    }
     [super sendEvent:event];
 }
 // v0.5.0: 多浮窗 —— 浮窗全屏窗口不拦截右缘触发条区域（strip 21.5pt）：
@@ -696,7 +732,11 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         [self addGestureRecognizer:_scalePan];
         [self addGestureRecognizer:_longPress];
         [self addGestureRecognizer:_doubleTap];
-        poc_log(@"GEST_REGISTERED pan=%@ pinch=%@ scalePan=%@ longPress=%@ doubleTap=%@",
+        // v0.5.10: 手势识别器全部禁用 —— 触摸被 SB 手势拦截时识别器收不到触摸（v0.5.7/0.5.8 实锤），
+        // 全部改由手动触摸处理（touchesBegan/Moved/Ended + pocHandleTouch*）驱动
+        _pan.enabled = NO; _pinch.enabled = NO; _scalePan.enabled = NO;
+        _longPress.enabled = NO; _doubleTap.enabled = NO;
+        poc_log(@"GEST_REGISTERED pan=%@ pinch=%@ scalePan=%@ longPress=%@ doubleTap=%@ (manual-touch mode)",
                 _pan.enabled ? @"on" : @"off", _pinch.enabled ? @"on" : @"off",
                 _scalePan.enabled ? @"on" : @"off", _longPress.enabled ? @"on" : @"off",
                 _doubleTap.enabled ? @"on" : @"off");
@@ -866,19 +906,119 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         else [self setNeedsLayout];
     }
 }
+// v0.5.10: 手动触摸统一入口 —— 系统派发（本方法）与窗口手动派发（pocHandleTouch*）双路去重。
+// 手势识别器已禁用（init 末尾 enabled=NO），拖动/缩放/双击全部由这里手动驱动。
 - (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesBegan:touches withEvent:event];
     UITouch *t = [touches anyObject];
-    CGPoint p = [t locationInView:self];
-    static NSTimeInterval lastTB = 0;
-    NSTimeInterval nowTB = [[NSProcessInfo processInfo] systemUptime];
-    if (nowTB - lastTB > 0.2) { lastTB = nowTB; poc_log(@"CTR_TOUCH_BEGAN p=(%.0f,%.0f)", p.x, p.y); }
+    if (t) [self pocHandleTouchBegan:t point:[t locationInView:self]];
+}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    UITouch *t = [touches anyObject];
+    if (t) [self pocHandleTouchMoved:t point:[t locationInView:self]];
 }
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesEnded:touches withEvent:event];
-    static NSTimeInterval lastTE = 0;
-    NSTimeInterval nowTE = [[NSProcessInfo processInfo] systemUptime];
-    if (nowTE - lastTE > 0.2) { lastTE = nowTE; poc_log(@"CTR_TOUCH_ENDED"); }
+    UITouch *t = [touches anyObject];
+    if (t) [self pocHandleTouchEnded:t];
+}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    UITouch *t = [touches anyObject];
+    if (t) [self pocHandleTouchEnded:t];
+}
+// ---- v0.5.10 手动触摸处理（拖动/角落缩放/双击重置；内容区穿透）----
+static UITouch *s_mTouch = nil;
+static int s_mMode = 0;          // 0=none 1=drag 2=cornerL 3=cornerR 4=pass
+static CGPoint s_mStart;         // 起点（容器坐标）
+static CGRect  s_mFrame;         // 起始 frame
+static NSTimeInterval s_mT0;     // 起始时间
+static int s_tapSeq = 0;         // 双击序列
+static NSTimeInterval s_tapT0 = 0;
+- (void)pocHandleTouchBegan:(UITouch *)t point:(CGPoint)p {
+    if (s_mTouch == t) return;   // 双路去重（系统派发 + 窗口手动派发）
+    s_mTouch = t;
+    s_mStart = p;
+    s_mFrame = self.frame;
+    s_mT0 = CACurrentMediaTime();
+    CGRect b = self.bounds;
+    CGFloat w = b.size.width, h = b.size.height;
+    if (p.x < 44 && p.y > h - 44)            s_mMode = 2;   // 左下角缩放
+    else if (p.x > w - 44 && p.y > h - 44)   s_mMode = 3;   // 右下角缩放
+    else if (p.y < 44 || p.y > h - 72 || p.x < 16 || p.x > w - 16) s_mMode = 1;  // 拖动带
+    else s_mMode = 4;                        // 内容区（穿透）
+    static NSTimeInterval lastB = 0;
+    NSTimeInterval nowB = [[NSProcessInfo processInfo] systemUptime];
+    if (nowB - lastB > 0.2) { lastB = nowB; poc_log(@"MTOUCH_BEGAN mode=%d p=(%.0f,%.0f)", s_mMode, p.x, p.y); }
+}
+- (void)pocHandleTouchMoved:(UITouch *)t point:(CGPoint)p {
+    if (s_mTouch != t || s_mMode == 0 || s_mMode == 4) return;
+    if (s_mMode == 1) {   // 拖动（至少保留 60pt 在屏内）
+        CGRect f = s_mFrame;
+        f.origin.x += p.x - s_mStart.x;
+        f.origin.y += p.y - s_mStart.y;
+        CGFloat minX = 60 - f.size.width, maxX = 430 - 60;
+        CGFloat minY = 60 - f.size.height, maxY = 932 - 60;
+        f.origin.x = MAX(minX, MIN(f.origin.x, maxX));
+        f.origin.y = MAX(minY, MIN(f.origin.y, maxY));
+        self.frame = f;
+    } else {   // 角落缩放（对边锚定，最小 120×160）
+        CGFloat dx = p.x - s_mStart.x, dy = p.y - s_mStart.y;
+        CGRect f = s_mFrame;
+        if (s_mMode == 2) {   // 左下角：左上角锚定，右下角随动
+            f.size.width  = MAX(120, s_mFrame.size.width + dx);
+            f.size.height = MAX(160, s_mFrame.size.height + dy);
+            f.origin.y = s_mFrame.origin.y;
+        } else {              // 右下角：右上角锚定，左下角随动
+            f.size.width  = MAX(120, s_mFrame.size.width + dx);
+            f.size.height = MAX(160, s_mFrame.size.height + dy);
+            f.origin.x = s_mFrame.origin.x;
+        }
+        self.frame = f;
+    }
+    static NSTimeInterval lastM = 0;
+    NSTimeInterval nowM = [[NSProcessInfo processInfo] systemUptime];
+    if (nowM - lastM > 0.2) { lastM = nowM; poc_log(@"MTOUCH_MOVED mode=%d f=%@", s_mMode, NSStringFromCGRect(self.frame)); }
+}
+- (void)pocHandleTouchEnded:(UITouch *)t {
+    if (s_mTouch != t) return;
+    CGPoint pe = [t locationInView:self];
+    // 双击重置：拖动带内轻点（位移 < 20、间隔 < 0.35s）
+    if (s_mMode == 1 && fabs(pe.x - s_mStart.x) < 20 && fabs(pe.y - s_mStart.y) < 20) {
+        if (s_tapSeq == 0) { s_tapSeq = 1; s_tapT0 = s_mT0; }
+        else if (s_mT0 - s_tapT0 < 0.35) {
+            s_tapSeq = 0;
+            [self pocResetWindow];
+        } else s_tapSeq = 0;
+    }
+    if (s_mMode == 1) {   // 拖动结束 → 保存记忆
+        CGRect f = self.frame;
+        poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, f);
+    }
+    s_mTouch = nil;
+    s_mMode = 0;
+    static NSTimeInterval lastE = 0;
+    NSTimeInterval nowE = [[NSProcessInfo processInfo] systemUptime];
+    if (nowE - lastE > 0.2) { lastE = nowE; poc_log(@"MTOUCH_ENDED"); }
+}
+// v0.5.10: 双击重置（复用 v0.4.13 逻辑：细长条/畸形尺寸恢复默认尺寸居中）
+- (void)pocResetWindow {
+    if (_fullscreen) return;
+    CGSize native = self.nativeContentSize;
+    CGFloat defW = 340, defH = 500;
+    if (native.width > 0 && native.height > 0) {
+        defH = defW * (native.height / native.width);
+        if (defH > 860) { defH = 860; defW = defH * (native.width / native.height); }
+    }
+    CGRect b = self.superview ? self.superview.bounds : CGRectMake(0, 0, 430, 932);
+    CGRect rf = CGRectMake((b.size.width - defW) / 2.0, (b.size.height - defH) / 2.0, defW, defH);
+    _halfSnapped = NO;
+    poc_log(@"MTOUCH_RESET to=%@", NSStringFromCGRect(rf));
+    [UIView animateWithDuration:0.32 delay:0 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.frame = rf;
+    } completion:nil];
+    poc_save_float_state_for(ctr_get(self, kWinSidOwner) ?: g_lastSid, rf);
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = [super hitTest:point withEvent:event];
@@ -1211,6 +1351,84 @@ static void ctr_set(id c, const void *key, id val) {
 }
 static id ctr_get(id c, const void *key) {
     return c ? objc_getAssociatedObject(c, key) : nil;
+}
+
+// ----------------------------------------------------------------------------
+// v0.5.10: SB 系统手势中和 —— 触摸被截断根因修复（Stheno 同款机制）
+// v0.5.8 实锤：触摸 hitTest 命中浮窗容器但 touches/手势从未派发（CTR_TOUCH_BEGAN=0、
+// GEST_BEGIN_CHECK=0）→ 系统手势（SBFluidSwitcher/SBHome 等）在浮窗窗口之上抢占触摸并
+// cancel 触摸派发。Stheno 通过 hook SBFluidSwitcherGestureManager 的
+// _handleDeckSwitcherPanGesture:/_handleClickAndDragHomeGesture:/_handlePullGesture:
+// 让 SB 手势给浮窗让路。这里做两步：
+//   ① 遍历 SB 窗口手势识别器 → cancelsTouchesInView=NO（触摸不被 cancel）
+//   ② hook SBFluidSwitcherGestureManager.gestureRecognizerShouldBegin: →
+//      触摸点在任一浮窗容器内时返回 NO（识别失败 → 不抢占）
+// WRITE RISK = MEDIUM（只改手势配置/单方法 hook，异常全部 @try；锁屏兜底可回滚）
+// ----------------------------------------------------------------------------
+static BOOL poc_touch_in_float_container(id gr) {
+    if (!gr || ![gr respondsToSelector:@selector(locationInView:)]) return NO;
+    @try {
+        CGPoint gp = [gr locationInView:nil];   // nil → window/屏幕坐标
+        for (UIWindow *w in [g_wins copy]) {
+            QSFloatContainer *c = (QSFloatContainer *)win_get(w, kWinContainer);
+            if (!c || !c.window) continue;
+            CGPoint cp = [c convertPoint:gp fromView:nil];
+            if (CGRectContainsPoint(c.bounds, cp)) return YES;
+        }
+    } @catch (NSException *e) { }
+    return NO;
+}
+static BOOL (*g_orig_gsb)(id, SEL, id) = NULL;
+static BOOL poc_hooked_gsb(id self, SEL _cmd, id gr) {
+    @try {
+        if (poc_touch_in_float_container(gr)) {
+            static NSTimeInterval lastBlk = 0;
+            NSTimeInterval nowBlk = [[NSProcessInfo processInfo] systemUptime];
+            if (nowBlk - lastBlk > 0.5) { lastBlk = nowBlk; poc_log(@"SBGEST_GSB_BLOCK float-container"); }
+            return NO;
+        }
+    } @catch (NSException *e) { }
+    return g_orig_gsb ? g_orig_gsb(self, _cmd, gr) : YES;
+}
+static void poc_neutralize_sb_gestures(void) {
+    @try {
+        // ① 遍历全部窗口（含 SB 高 level 窗口）的手势识别器
+        NSMutableArray *found = [NSMutableArray array];
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            NSArray *grs = w.gestureRecognizers;
+            for (UIGestureRecognizer *gr in grs) {
+                NSString *cn = NSStringFromClass([gr class]);
+                if ([cn containsString:@"Switcher"] || [cn containsString:@"Home"]
+                    || [cn containsString:@"Fluid"] || [cn containsString:@"Reachability"]
+                    || [cn containsString:@"SystemGesture"] || [cn containsString:@"SBFluid"]
+                    || [cn containsString:@"ClickAndDrag"]) {
+                    [found addObject:gr];
+                }
+            }
+        }
+        poc_log(@"SBGEST_FOUND %lu", (unsigned long)found.count);
+        for (UIGestureRecognizer *gr in found) {
+            @try {
+                gr.cancelsTouchesInView = NO;
+                gr.delaysTouchesBegan = NO;
+                gr.delaysTouchesEnded = NO;
+                poc_log(@"SBGEST_NEUTRAL %@", NSStringFromClass([gr class]));
+            } @catch (NSException *e) { }
+        }
+        // ② hook SBFluidSwitcherGestureManager.gestureRecognizerShouldBegin:
+        Class gsm = NSClassFromString(@"SBFluidSwitcherGestureManager");
+        if (!gsm) { poc_log(@"SBGEST_NO_GSM"); return; }
+        SEL gsb = sel_registerName("gestureRecognizerShouldBegin:");
+        Method m = class_getInstanceMethod(gsm, gsb);
+        if (!m) { poc_log(@"SBGEST_NO_GSB_METHOD"); return; }
+        g_orig_gsb = (BOOL (*)(id, SEL, id))method_getImplementation(m);
+        method_setImplementation(m, imp_implementationWithBlock(^(id self, id gr) {
+            return poc_hooked_gsb(self, gsb, gr);
+        }));
+        poc_log(@"SBGEST_GSB_HOOKED");
+    } @catch (NSException *e) {
+        poc_log(@"SBGEST_EXC %@", e.name);
+    }
 }
 static UIView *g_hostView = nil;
 static UIView *g_diag = nil;   // v0.1.7: 红色诊断视图（独立子视图，20s 后移除）
@@ -3067,10 +3285,12 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.9 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.10 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
+        // v0.5.10: SB 系统手势中和（触摸截断根因修复）—— 先于一切窗口/手势初始化
+        poc_neutralize_sb_gestures();
         // v0.4.16: 右侧滑动应用选择器（Stheno 风格入口）
         poc_setup_edge_trigger();
         // v0.3.15: KEEP tick 3s → 1s —— 主屏回退响应提速（app 重新打开后 ≤1s 隐藏全屏，缓解双 host 白屏闪烁）
