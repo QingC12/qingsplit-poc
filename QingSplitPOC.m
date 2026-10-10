@@ -652,6 +652,9 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         _pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onPan:)];
         _pinch = [[UIPinchGestureRecognizer alloc] initWithTarget:self action:@selector(onPinch:)];
         _scalePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(onScalePan:)];
+        // v0.5.8: 显式 delegate=self —— gestureRecognizerShouldBegin 是 delegate 协议方法，
+        // UIView 子类重写不自动生效；不设 delegate 时手势默认 shouldBegin=YES 本应触发 action，
+        // 设 delegate 后探针可确认识别链路（v0.5.7 实锤：触摸到容器边框但 shouldBegin 从未调用）
         // v0.4.9: Stheno LongPressGesture(minimumDuration:maximumDistance:) 对应 —— v0.4.11: 0.3s / 30pt
         _longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(onLongPress:)];
         _longPress.minimumPressDuration = 0.3;
@@ -664,11 +667,20 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         _scalePan.delegate = self;
         _longPress.delegate = self;
         _doubleTap.delegate = self;
+        _pan.delegate = self;
+        _pinch.delegate = self;
+        _scalePan.delegate = self;
+        _longPress.delegate = self;
+        _doubleTap.delegate = self;
         [self addGestureRecognizer:_pan];
         [self addGestureRecognizer:_pinch];
         [self addGestureRecognizer:_scalePan];
         [self addGestureRecognizer:_longPress];
         [self addGestureRecognizer:_doubleTap];
+        poc_log(@"GEST_REGISTERED pan=%@ pinch=%@ scalePan=%@ longPress=%@ doubleTap=%@",
+                _pan.enabled ? @"on" : @"off", _pinch.enabled ? @"on" : @"off",
+                _scalePan.enabled ? @"on" : @"off", _longPress.enabled ? @"on" : @"off",
+                _doubleTap.enabled ? @"on" : @"off");
         // v0.4.38: 移除角落缩放把手视觉指引（功能保留，热区透明）
         // v0.3.16: 右上角关闭按钮（明确关闭机制，仅移除浮窗不动 Scene）
         [self addCloseButton];
@@ -834,6 +846,20 @@ static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明�
         if (!vis) _closeBtn.frame = CGRectMake(self.bounds.size.width - 52, 6, 44, 44);
         else [self setNeedsLayout];
     }
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesBegan:touches withEvent:event];
+    UITouch *t = [touches anyObject];
+    CGPoint p = [t locationInView:self];
+    static NSTimeInterval lastTB = 0;
+    NSTimeInterval nowTB = [[NSProcessInfo processInfo] systemUptime];
+    if (nowTB - lastTB > 0.2) { lastTB = nowTB; poc_log(@"CTR_TOUCH_BEGAN p=(%.0f,%.0f)", p.x, p.y); }
+}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    static NSTimeInterval lastTE = 0;
+    NSTimeInterval nowTE = [[NSProcessInfo processInfo] systemUptime];
+    if (nowTE - lastTE > 0.2) { lastTE = nowTE; poc_log(@"CTR_TOUCH_ENDED"); }
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *h = [super hitTest:point withEvent:event];
@@ -3022,7 +3048,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.5.7 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.5.8 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
