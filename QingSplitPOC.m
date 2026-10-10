@@ -2263,17 +2263,45 @@ static void poc_unadopt_window(UIWindow *w) {
                 }
             }
             if (!putBack) poc_log(@"UNADOPT_NOBACK sid=%@ pv.superview=%@", win_get(w, kWinSid), pv.superview);
-            // v0.6.11: presenter 重激活延迟执行（不在 close 主流程同步触发，避免阻塞主队列
-            // 导致后续 dispatch 延迟 10s；0.15s 后 REACT + 显示 pv —— 系统接管布局为全屏）
+            // v0.6.12: 延迟恢复 —— 0.15s 后按 sid 实时重取 scene 并激活（v0.2.1 验证过的
+            // activateWithTransitionContext: 拉回路径；v0.6.9 失败只因 kWinScene 读到 nil），
+            // 激活后 0.3s 再显示 pv（给系统接管布局时间，避免左上角闪烁）
+            NSString *wsidU = win_get(w, kWinSid);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 @try {
+                    // presenter 重激活（保留，无害）
                     poc_reactivate_presenter(pv);
-                    pv.hidden = NO;
-                    [pv.superview setNeedsLayout];
+                    // scene 实时重取 + 激活
+                    id scene = nil;
+                    for (id sc in poc_all_scenes()) {
+                        if ([[poc_scene_id(sc)] isEqualToString:wsidU]) { scene = sc; break; }
+                    }
+                    if (scene) {
+                        SEL sel = sel_registerName("activateWithTransitionContext:");
+                        if ([scene respondsToSelector:sel]) {
+                            id ctx = nil;
+                            Class c = NSClassFromString(@"FBSSceneTransitionContext");
+                            if (c) ctx = [[c alloc] init];
+                            void (*fn)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+                            fn(scene, sel, ctx);
+                            poc_log(@"UNADOPT_SCENE_ACT2 sid=%@ ctxCls=%@", wsidU,
+                                    ctx ? NSStringFromClass(c) : @"nil");
+                        } else {
+                            poc_log(@"UNADOPT_SCENE_NOAPI2 sid=%@", wsidU);
+                        }
+                    } else {
+                        poc_log(@"UNADOPT_SCENE_MISS sid=%@", wsidU);
+                    }
                 } @catch (NSException *e) {
                     poc_log(@"UNADOPT_REACT_EXC %@", e.name);
-                    pv.hidden = NO;
                 }
+                // 激活后延迟显示 pv（系统接管布局为全屏）
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    @try {
+                        pv.hidden = NO;
+                        [pv.superview setNeedsLayout];
+                    } @catch (NSException *e) { }
+                });
             });
         }
         win_set(w, kWinAdopted, nil);
@@ -3944,7 +3972,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.11 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.12 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
