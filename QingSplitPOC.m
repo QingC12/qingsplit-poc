@@ -552,6 +552,81 @@ static UIView *poc_make_host_view(id sceneLayer, NSInteger ctx, int *outPath) {
 }
 
 // ----------------------------------------------------------------------------
+// v0.6.0: presenter 渲染通道（Stheno 式）—— 只读获取已存在的 presenter presentationView
+// Stheno 逆向 hook 面：UIScenePresentationManager / SBDeviceApplicationSceneViewController /
+//   UIStatusBarWindow —— 浮窗内容用 presenter 的 presentationView（系统管理 layer），
+//   避免 _UIContextLayerHostView 手动重映射导致的卡顿（v0.5.16 日志实锤）。
+// 链（poc_zorder_raise 已验证）: _UISceneLayerHostContainerView → _dataSource
+//   (_UIScenePresentationView) → presenter → presentationView
+// 只读获取：不调用 presentPresentable 等写操作（v0.6.1 再启用系统呈现），失败返回 nil
+//   → 调用方 fallback 旧通道（legacy），功能不退化。
+// ----------------------------------------------------------------------------
+static UIView *poc_make_presenter_view(NSString *targetSid, id targetScene) {
+    @try {
+        // 1) 先直接查 targetScene 的 presentationManager / presenter 链
+        id pm = poc_tryKVC(targetScene, @[@"_presentationManager", @"presentationManager", @"presentationManagerForVisibility", @"_presentationManagerForVisibility"]);
+        if (pm) {
+            id presenter = poc_tryKVC(pm, @[@"presenter", @"_presenter"]);
+            if (presenter) {
+                id pv = poc_tryKVC(presenter, @[@"presentationView", @"_presentationView", @"view"]);
+                if (pv && [pv isKindOfClass:[UIView class]]) {
+                    poc_log(@"PRESENTER_DIRECT sid=%@ pm=%@ presenter=%@ pv=%@", targetSid, poc_cls(pm), poc_cls(presenter), poc_cls(pv));
+                    return (UIView *)pv;
+                }
+                poc_log(@"PRESENTER_DIRECT_NOPV sid=%@ pm=%@ presenter=%@", targetSid, poc_cls(pm), poc_cls(presenter));
+                return nil;
+            }
+        }
+        // 2) 窗口容器链找（后台/浮窗托管 app 的 presenter）
+        NSMutableSet *winSet = [NSMutableSet set];
+        for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
+            [winSet addObject:[NSValue valueWithNonretainedObject:w]];
+        }
+        for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+            NSArray *ws = poc_tryKVC(sc, @[@"windows"]);
+            for (UIWindow *w in ws) { if (w) [winSet addObject:[NSValue valueWithNonretainedObject:w]]; }
+        }
+        for (NSValue *vv in winSet) {
+            UIWindow *w = [vv nonretainedObjectValue];
+            if (!w) continue;
+            NSMutableArray *found = [NSMutableArray array];
+            __block void (^walk)(UIView *, int);
+            void (^walkBlock)(UIView *, int) = ^(UIView *v, int depth) {
+                if (!v || depth > 10) return;
+                if ([poc_cls(v) isEqualToString:@"_UISceneLayerHostContainerView"]) [found addObject:v];
+                for (UIView *c in v.subviews) walk(c, depth + 1);
+            };
+            walk = walkBlock;
+            walk(w, 0);
+            for (UIView *container in found) {
+                @try {
+                    id cscene = poc_tryKVC(container, @[@"_scene", @"scene"]);
+                    if (!cscene) continue;
+                    NSString *csid = poc_scene_id(cscene);
+                    if (![csid isEqualToString:targetSid]) continue;
+                    id presenter = poc_tryKVC(container, @[@"presenter", @"_presenter"]);
+                    if (!presenter) {
+                        id ds = poc_tryKVC(container, @[@"_dataSource", @"dataSource"]);
+                        presenter = poc_tryKVC(ds, @[@"presenter", @"_presenter"]);
+                    }
+                    if (!presenter) { poc_log(@"PRESENTER_CONTAINER_NOPRES sid=%@ container=%@", targetSid, poc_cls(container)); continue; }
+                    id pv = poc_tryKVC(presenter, @[@"presentationView", @"_presentationView", @"view"]);
+                    if (pv && [pv isKindOfClass:[UIView class]]) {
+                        poc_log(@"PRESENTER_CONTAINER_OK sid=%@ presenter=%@ pv=%@ container=%@", targetSid, poc_cls(presenter), poc_cls(pv), poc_cls(container));
+                        return (UIView *)pv;
+                    }
+                    poc_log(@"PRESENTER_CONTAINER_NOPV sid=%@ presenter=%@", targetSid, poc_cls(presenter));
+                } @catch (NSException *e) { }
+            }
+        }
+        poc_log(@"PRESENTER_NONE sid=%@", targetSid);
+    } @catch (NSException *e) {
+        poc_log(@"PRESENTER_EXC %@", e.name);
+    }
+    return nil;
+}
+
+// ----------------------------------------------------------------------------
 // Z-order（最小写）：遍历窗口容器链找目标 scene 的 presenter → _setActivePrioritizedPresenter:
 // 探针已验证链: 容器(_UISceneLayerHostContainerView) → _dataSource(_UIScenePresentationView)
 //              → presenter → owner → _scenePresentationManager
@@ -2440,7 +2515,13 @@ static void poc_try_float(void) {
     //    轨道 B：layerManager 为空（前台 app）→ 从系统宿主容器拿 contextID → 路径 3
     int path = 0;
     UIView *hv = nil;
-    if (layer) {
+    NSString *rChannel = @"legacy";
+    // v0.6.0: presenter 渲染通道（Stheno 式）优先 —— 系统管理 layer，避免远程 layer 手动重映射卡顿
+    if (scene) {
+        UIView *pv = poc_make_presenter_view(sid, scene);
+        if (pv) { hv = pv; path = 4; rChannel = @"presenter"; }
+    }
+    if (!hv && layer) {
         hv = poc_make_host_view(layer, ctx, &path);
     }
     if (!hv) {
@@ -2466,7 +2547,7 @@ static void poc_try_float(void) {
         }
         return;
     }
-    poc_log(@"RENDER_PATH=%d ctx=%ld", path, (long)ctx);
+    poc_log(@"RENDER_PATH=%d ctx=%ld channel=%@", path, (long)ctx, rChannel);
 
     // 3. 创建浮窗窗口（写操作 #1：窗口创建/显示，对齐 Stheno LEVEL=999.0）
     @try {
