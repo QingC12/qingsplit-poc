@@ -2224,7 +2224,7 @@ static BOOL poc_scene_is_floating(id scene) {
             NSString *wsid = win_get(w, kWinSid);
             if (wsid && [wsid hasPrefix:[@"sceneID:" stringByAppendingString:b]]) return YES;
         }
-        if (g_manualSid && [g_manualSid hasPrefix:[@"sceneID:" stringByAppendingString:b]]) return YES;
+        if (g_lastSid && [g_lastSid hasPrefix:[@"sceneID:" stringByAppendingString:b]]) return YES;
     } @catch (NSException *e) { }
     return NO;
 }
