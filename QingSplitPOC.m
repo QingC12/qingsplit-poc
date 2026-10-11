@@ -2357,6 +2357,15 @@ static NSString *poc_frontmost_bundle(void) {
             if (bid) return [NSString stringWithFormat:@"%@", bid];
         }
     } @catch (NSException *e) { }
+    // v0.6.29: 兜底 —— 设置"主屏宿主 app"（hostApp，默认豆包 com.bot.doubao）
+    // iOS 17.3.1 SB 前台探测 API 全失效（6 版探针实锤），主屏 app 由用户配置确定。
+    @try {
+        NSString *host = poc_setting_str(@"hostApp", @"com.bot.doubao");
+        if (host.length) {
+            poc_log(@"FRONT_HOST bid=%@", host);
+            return host;
+        }
+    } @catch (NSException *e) { }
     return nil;
 }
 static NSString *poc_current_bundle(void) {
@@ -2892,6 +2901,33 @@ static void poc_keep_float(void) {
                     }
                     win_set(g_win, kWinAdopted, @YES);
                     poc_log(@"ADOPT_OK sid=%@ pv=%@ — system-managed layer, no ghosting", wsid, poc_cls(pv));
+            // v0.6.29: 呈现重定向实验 —— 浮窗建立后，激活主屏宿主 app 回主屏（真并存：主屏豆包 + 浮窗QQ）
+            // 安全：后台线程 LS 激活（系统级前台切换，低风险）；hostApp=浮窗 app 则跳过；失败仅日志不影响浮窗
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSString *host = poc_setting_str(@"hostApp", @"com.bot.doubao");
+                NSString *floatB = wsid;
+                if ([floatB hasPrefix:@"sceneID:"]) floatB = [floatB substringFromIndex:@"sceneID:".length];
+                NSRange fDash = [floatB rangeOfString:@"-"];
+                if (fDash.location != NSNotFound) floatB = [floatB substringToIndex:fDash.location];
+                if (!host.length || [host isEqualToString:floatB]) {
+                    poc_log(@"REDIRECT_SKIP host=%@ float=%@", host.length ? host : @"nil", floatB);
+                    return;
+                }
+                poc_log(@"REDIRECT_START host=%@ float=%@", host, floatB);
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    @try {
+                        id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
+                        if (ws) {
+                            BOOL ok = (BOOL)[ws performSelector:@selector(openApplicationWithBundleID:) withObject:host];
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                poc_log(@"REDIRECT_LS host=%@ ok=%d", host, ok);
+                            });
+                        }
+                    } @catch (NSException *e) {
+                        poc_log(@"REDIRECT_EXC %@", e.name);
+                    }
+                });
+            });
                 }
             }
         } @catch (NSException *e) {
@@ -4440,7 +4476,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.28 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.29 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
