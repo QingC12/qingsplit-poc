@@ -2919,7 +2919,7 @@ static void poc_keep_float(void) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     @try {
                         for (UIWindow *w in [g_wins copy]) {
-                            UIView *pv = win_get(w, kWinPv);
+                            UIView *pv = win_get(w, kWinHostView);
                             NSString *wsid = win_get(w, kWinSid);
                             if (!pv) continue;
                             // pv 是否仍在视图树
