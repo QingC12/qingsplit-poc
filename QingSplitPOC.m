@@ -2999,8 +2999,11 @@ static void poc_keep_float(void) {
                                 for (id sc in all) {
                                     NSString *iid = poc_scene_id(sc);
                                     if (wsid && [iid isEqualToString:wsid]) {
-                                        st = [[sc valueForKey:@"activationState"] integerValue];
                                         scid = iid;
+                                        // FBScene 无 activationState 键 → 从 settings 层拿（v0.6.33 修 NSUnknownKeyException）
+                                        id settings = [sc valueForKey:@"settings"];
+                                        if (settings) st = [[settings valueForKey:@"activationState"] integerValue];
+                                        if (st < 0) st = [[sc valueForKey:@"activationState"] integerValue];
                                         break;
                                     }
                                 }
@@ -4574,7 +4577,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.32 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.33 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
@@ -4582,12 +4585,24 @@ static void poc_setup_edge_trigger(void) {
         poc_neutralize_sb_gestures();
         // v0.6.32: hook 崩溃自愈（删除标记 → 下次无 hook）
         qs_hook_selfheal();
-        // v0.6.32: ellekit 防停用观测 hook —— 标记存在且 SB 稳定后才装（15s 延迟）
-        if (qs_hook_flag_exists()) {
+        // v0.6.33: ellekit 防停用观测 hook —— 默认自动启用（上次正常完成才装；上次崩溃自动跳过 = 自愈）
+        // 手动 touch /var/mobile/qsp_hook_enable 可强制启用
+        BOOL lastOk = YES;
+        @try {
+            NSString *stOld = [NSString stringWithContentsOfFile:@"/var/mobile/qsp_poc_state" encoding:NSUTF8StringEncoding error:NULL];
+            if (stOld) {
+                NSArray *parts = [stOld componentsSeparatedByString:@" "];
+                if (parts.count >= 2) lastOk = ([parts[1] integerValue] == 1);
+            }
+        } @catch (NSException *e) { }
+        BOOL force = qs_hook_flag_exists();
+        if (force || lastOk) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                 qs_install_deact_obs_hook();
             });
-            poc_log(@"HOOK_FLAG_ON (observation mode)");
+            poc_log(@"HOOK_AUTO_ON force=%d lastOk=%d (observation mode)", force ? 1 : 0, lastOk ? 1 : 0);
+        } else {
+            poc_log(@"HOOK_SKIP lastOk=0 (previous boot incomplete — self-heal, no hook this launch)");
         }
         // v0.5.11: 窗口层级快照 —— keyWindow 决定触摸路由（浮窗窗口是否收触摸的关键）
         @try {
