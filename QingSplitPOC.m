@@ -841,20 +841,43 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                     if ([exts isKindOfClass:[NSSet class]]) [allH addObjectsFromArray:[exts allObjects]];
                     poc_log(@"PROBE_SCENE_LIST total=%lu", (unsigned long)allH.count);
                     for (id h in allH) {
-                        id ident = poc_tryKVC(h, @[@"sceneIdentity", @"_sceneIdentity", @"identity", @"_identity"]);
-                        NSString *bid = poc_str(poc_tryKVC(ident, @[@"applicationBundleIdentifier", @"bundleIdentifier", @"_bundleIdentifier"]));
-                        NSString *pid = poc_str(poc_tryKVC(ident, @[@"persistenceIdentifier", @"_persistenceIdentifier"]));
-                        id fsc = poc_tryKVC(h, @[@"_scene", @"scene"]);
+                        // v0.6.24: 枚举 handle 全部 getter/property 键名（找出 identity/bundle/FBScene 的正确键）
+                        unsigned int pc = 0;
+                        objc_property_t *pl = class_copyPropertyList([h class], &pc);
+                        NSMutableArray *pk = [NSMutableArray array];
+                        if (pl) {
+                            for (unsigned int i = 0; i < pc; i++) {
+                                const char *pn = property_getName(pl[i]);
+                                if (pn) [pk addObject:[NSString stringWithUTF8String:pn]];
+                            }
+                            free(pl);
+                        }
+                        poc_log(@"PROBE_HANDLE_PROPS cls=%@ props=%@", poc_cls(h),
+                                [pk componentsJoinedByString:@"|"]);
+                        // 尝试多个 identity 键
+                        id ident = poc_tryKVC(h, @[@"sceneIdentity", @"_sceneIdentity", @"identity", @"_identity", @"applicationSceneIdentity", @"_applicationSceneIdentity"]);
+                        NSString *bid = ident ? poc_str(poc_tryKVC(ident, @[@"applicationBundleIdentifier", @"bundleIdentifier", @"_bundleIdentifier", @"workspaceIdentifier", @"_workspaceIdentifier"])) : @"";
+                        NSString *pid = ident ? poc_str(poc_tryKVC(ident, @[@"persistenceIdentifier", @"_persistenceIdentifier", @"sceneIdentifier", @"_sceneIdentifier"])) : @"";
+                        // FBScene 尝试：handle 本身或 _scene
+                        id fsc = poc_tryKVC(h, @[@"_scene", @"scene", @"_fbScene", @"fbScene"]);
                         if (!fsc) fsc = h;
+                        // fsc 若还是 handle，尝试 identity 里的 sceneIdentity
+                        if (fsc == h) {
+                            id si = ident ? poc_tryKVC(ident, @[@"sceneIdentity", @"_sceneIdentity"]) : nil;
+                            if (si) fsc = si;
+                        }
                         int st = [poc_tryKVC(fsc, @[@"activationState", @"_activationState", @"state"]) intValue];
                         id pm3 = poc_tryKVC(fsc, @[@"presentationManager", @"_presentationManager"]);
                         id pr3 = pm3 ? poc_tryKVC(pm3, @[@"presenter", @"_presenter"]) : nil;
                         if (!pr3) pr3 = poc_tryKVC(fsc, @[@"presenter", @"_presenter"]);
-                        poc_log(@"PROBE_SCENE id=%@ bid=%@ cls=%@ act=%d pres=%@ pv=%@",
+                        // v0.6.24: 主屏 rootWindow 的呈现链（presenter 挂靠位置探针）
+                        id pw = poc_tryKVC(fsc, @[@"presentationHostWindow", @"_presentationHostWindow", @"hostWindow", @"_hostWindow"]);
+                        poc_log(@"PROBE_SCENE id=%@ bid=%@ cls=%@ act=%d pres=%@ pv=%@ host=%@",
                                 pid.length ? pid : @"?", bid.length ? bid : @"?",
                                 poc_cls(h), st,
                                 pr3 ? poc_cls(pr3) : @"nil",
-                                pr3 ? poc_cls(poc_tryKVC(pr3, @[@"presentationView", @"_presentationView", @"view"])) : @"-");
+                                pr3 ? poc_cls(poc_tryKVC(pr3, @[@"presentationView", @"_presentationView", @"view"])) : @"-",
+                                poc_cls(pw));
                     }
                 } else {
                     poc_log(@"PROBE_SCENE_LIST sm=nil");
@@ -4253,7 +4276,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.23 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.24 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
