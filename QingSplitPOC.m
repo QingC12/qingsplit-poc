@@ -827,11 +827,18 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                     if (sm2) break;
                 }
                 if (sm2) {
-                    NSArray *runs = poc_tryKVC(sm2, @[@"runningApplicationScenes"]);
-                    NSArray *exts = poc_tryKVC(sm2, @[@"externalApplicationSceneHandles"]);
+                    // v0.6.23: runningApplicationScenes: 是带参方法，用 performSelector；externalApplicationSceneHandles 是 getter
                     NSMutableArray *allH = [NSMutableArray array];
+                    id runs = nil;
+                    SEL runSel = NSSelectorFromString(@"runningApplicationScenes:");
+                    if ([sm2 respondsToSelector:runSel]) {
+                        runs = [sm2 performSelector:runSel withObject:nil];
+                    }
                     if ([runs isKindOfClass:[NSArray class]]) [allH addObjectsFromArray:runs];
+                    if ([runs isKindOfClass:[NSSet class]]) [allH addObjectsFromArray:[runs allObjects]];
+                    id exts = poc_tryKVC(sm2, @[@"externalApplicationSceneHandles", @"_externalApplicationSceneHandles"]);
                     if ([exts isKindOfClass:[NSArray class]]) [allH addObjectsFromArray:exts];
+                    if ([exts isKindOfClass:[NSSet class]]) [allH addObjectsFromArray:[exts allObjects]];
                     poc_log(@"PROBE_SCENE_LIST total=%lu", (unsigned long)allH.count);
                     for (id h in allH) {
                         id ident = poc_tryKVC(h, @[@"sceneIdentity", @"_sceneIdentity", @"identity", @"_identity"]);
@@ -851,6 +858,24 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                     }
                 } else {
                     poc_log(@"PROBE_SCENE_LIST sm=nil");
+                }
+                // v0.6.23: 前台 app 探测（LS frontmost 尝试 + SB 枚举）
+                @try {
+                    Class ls = NSClassFromString(@"FBSSystemService");
+                    if (ls) {
+                        id fbs = [ls valueForKey:@"sharedService"];
+                        if (fbs) {
+                            id fapp = nil;
+                            @try { fapp = [fbs performSelector:NSSelectorFromString(@"frontmostApplication")]; } @catch (NSException *e) {}
+                            if (!fapp) @try { fapp = [fbs performSelector:NSSelectorFromString(@"frontApplication")]; } @catch (NSException *e) {}
+                            if (fapp) {
+                                NSString *fbid = poc_str([fapp performSelector:NSSelectorFromString(@"bundleIdentifier")]);
+                                poc_log(@"PROBE_FRONT class=%@ bid=%@", poc_cls(fapp), fbid.length ? fbid : @"?");
+                            } else { poc_log(@"PROBE_FRONT nil"); }
+                        }
+                    }
+                } @catch (NSException *e) {
+                    poc_log(@"PROBE_FRONT_EXC %@", e.name);
                 }
             } @catch (NSException *e) {
                 poc_log(@"PROBE_SCENE_EXC %@", e.name);
@@ -4228,7 +4253,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.22 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.23 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
