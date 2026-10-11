@@ -2209,65 +2209,6 @@ static void poc_hook_sb_gsm_actions(void) {
         poc_log(@"SBGEST_ACT_EXC %@", e.name);
     }
 }
-// v0.6.30: 防停用 hook —— 拦截浮窗 app 的 scene 去激活（Stheno UIApplicationSceneDeactivationManagerHook 同面）
-// 激活主屏宿主 app 时系统会停用浮窗 app 的 scene → pv 内容清空（黑屏）。白名单拦截：浮窗 app 的 scene 不去激活。
-static BOOL poc_scene_is_floating(id scene) {
-    @try {
-        id ident = [scene valueForKey:@"identifier"];
-        NSString *sid = ident ? [NSString stringWithFormat:@"%@", ident] : @"";
-        if (![sid hasPrefix:@"sceneID:"]) return NO;
-        NSString *b = [sid substringFromIndex:@"sceneID:".length];
-        NSRange d = [b rangeOfString:@"-"];
-        if (d.location != NSNotFound) b = [b substringToIndex:d.location];
-        if (!b.length) return NO;
-        for (UIWindow *w in [g_wins copy]) {
-            NSString *wsid = win_get(w, kWinSid);
-            if (wsid && [wsid hasPrefix:[@"sceneID:" stringByAppendingString:b]]) return YES;
-        }
-        if (g_lastSid && [g_lastSid hasPrefix:[@"sceneID:" stringByAppendingString:b]]) return YES;
-    } @catch (NSException *e) { }
-    return NO;
-}
-static void poc_hook_deactivation_guard(void) {
-    @try {
-        Class dm = NSClassFromString(@"UIApplicationSceneDeactivationManager");
-        if (!dm) { poc_log(@"DEACT_NO_CLASS"); return; }
-        // ① _setDeactivationReasons:onScene:withSettings:reason: —— 去激活原因设置拦截
-        SEL s1 = sel_registerName("_setDeactivationReasons:onScene:withSettings:reason:");
-        Method m1 = class_getInstanceMethod(dm, s1);
-        if (m1) {
-            void (*orig1)(id, SEL, id, id, id, id) = (void (*)(id, SEL, id, id, id, id))method_getImplementation(m1);
-            method_setImplementation(m1, imp_implementationWithBlock(^(id self, id reasons, id scene, id settings, id reason) {
-                if (scene && poc_scene_is_floating(scene)) {
-                    static NSTimeInterval lastD = 0;
-                    NSTimeInterval nowD = [[NSProcessInfo processInfo] systemUptime];
-                    if (nowD - lastD > 0.5) { lastD = nowD; poc_log(@"DEACT_SKIP scene=%@", poc_scene_id(scene)); }
-                    return;   // 浮窗 app scene 不去激活 → 内容保持
-                }
-                orig1(self, s1, reasons, scene, settings, reason);
-            }));
-            poc_log(@"DEACT_HOOKED s1=1");
-        } else {
-            poc_log(@"DEACT_NO_M1");
-        }
-        // ② deactivateWithTransitionContext: —— 直接去激活拦截（找不到类跳过）
-        SEL s2 = sel_registerName("deactivateWithTransitionContext:");
-        Method m2 = class_getInstanceMethod(dm, s2);
-        if (m2) {
-            void (*orig2)(id, SEL, id) = (void (*)(id, SEL, id))method_getImplementation(m2);
-            method_setImplementation(m2, imp_implementationWithBlock(^(id self, id ctx) {
-                // ctx 拿不到 scene 引用（transitionContext）—— 保守不拦截（保持系统行为），仅日志
-                static NSTimeInterval lastT = 0;
-                NSTimeInterval nowT = [[NSProcessInfo processInfo] systemUptime];
-                if (nowT - lastT > 2.0) { lastT = nowT; poc_log(@"DEACT_CTX_CALL"); }
-                orig2(self, s2, ctx);
-            }));
-            poc_log(@"DEACT_HOOKED s2=1");
-        }
-    } @catch (NSException *e) {
-        poc_log(@"DEACT_EXC %@", e.name);
-    }
-}
 static void poc_neutralize_sb_gestures(void) {
     @try {
         poc_init_sb_delegate_class();
@@ -2974,6 +2915,38 @@ static void poc_keep_float(void) {
                     return;
                 }
                 poc_log(@"REDIRECT_START host=%@ float=%@", host, floatB);
+                // v0.6.31: 激活后纯观测轮询（不 hook）—— 确认黑屏时 scene 状态层面
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    @try {
+                        for (UIWindow *w in [g_wins copy]) {
+                            UIView *pv = win_get(w, kWinPv);
+                            NSString *wsid = win_get(w, kWinSid);
+                            if (!pv) continue;
+                            // pv 是否仍在视图树
+                            UIView *sup = pv.superview;
+                            // presenter 层 scene 状态
+                            id mgr = poc_scene_manager();
+                            id ws2 = mgr ? [mgr valueForKey:@"workspace"] : nil;
+                            NSInteger st = -1;
+                            NSString *scid = @"?";
+                            if (ws2) {
+                                NSArray *all = [ws2 valueForKey:@"allScenes"];
+                                for (id sc in all) {
+                                    NSString *iid = poc_scene_id(sc);
+                                    if (wsid && [iid isEqualToString:wsid]) {
+                                        st = [[sc valueForKey:@"activationState"] integerValue];
+                                        scid = iid;
+                                        break;
+                                    }
+                                }
+                            }
+                            poc_log(@"REDIRECT_OBS sid=%@ pvSup=%@ pvHidden=%d sceneState=%ld", wsid,
+                                    sup ? poc_cls(sup) : @"nil", pv.hidden ? 1 : 0, (long)st);
+                        }
+                    } @catch (NSException *e) {
+                        poc_log(@"REDIRECT_OBS_EXC %@", e.name);
+                    }
+                });
                 dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
                     @try {
                         id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
@@ -4536,14 +4509,12 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.30 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.31 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
         // v0.5.10: SB 系统手势中和（触摸截断根因修复）—— 先于一切窗口/手势初始化
         poc_neutralize_sb_gestures();
-        // v0.6.30: 防停用 hook（浮窗 app scene 去激活拦截）
-        poc_hook_deactivation_guard();
         // v0.5.11: 窗口层级快照 —— keyWindow 决定触摸路由（浮窗窗口是否收触摸的关键）
         @try {
             UIWindow *kw = [UIApplication sharedApplication].keyWindow;
