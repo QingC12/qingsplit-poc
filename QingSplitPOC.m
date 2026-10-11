@@ -842,7 +842,6 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                         int st = [poc_tryKVC(fsc, @[@"activationState", @"_activationState", @"state"]) intValue];
                         id pm3 = poc_tryKVC(fsc, @[@"presentationManager", @"_presentationManager"]);
                         id pr3 = pm3 ? poc_tryKVC(pm3, @[@"presenter", @"_presenter"]) : nil;
-                        if (!pr3 && [fsc respondsToSelector:@selector(presenter)]) pr3 = [fsc presenter];
                         if (!pr3) pr3 = poc_tryKVC(fsc, @[@"presenter", @"_presenter"]);
                         poc_log(@"PROBE_SCENE id=%@ bid=%@ cls=%@ act=%d pres=%@ pv=%@",
                                 pid.length ? pid : @"?", bid.length ? bid : @"?",
