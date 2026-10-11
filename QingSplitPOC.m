@@ -843,6 +843,56 @@ static void poc_probe_presentable(NSString *targetSid) {
                 }
             }
         } @catch (NSException *e) { poc_log(@"PROBE_PRES_WSSM_EXC %@", e.name); }
+        // v0.6.19: SBMainDisplaySceneManager 实例（SBWindowScene._sceneManager）全方法枚举 + presentationBinder
+        @try {
+            id sm = nil;
+            for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+                if ([sc isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                    sm = poc_tryKVC(sc, @[@"_sceneManager", @"sceneManager"]);
+                    if (sm) break;
+                }
+            }
+            if (sm) {
+                unsigned int mc = 0;
+                Method *ml = class_copyMethodList([sm class], &mc);
+                if (ml) {
+                    for (unsigned int i = 0; i < mc; i++) {
+                        SEL ms = method_getName(ml[i]);
+                        NSString *mn = ms ? NSStringFromSelector(ms) : @"";
+                        if (mn.length) poc_log(@"PROBE_SM_METH %@", mn);
+                    }
+                    free(ml);
+                }
+                // presentationBinder
+                id binder = poc_tryKVC(sm, @[@"presentationBinder", @"_presentationBinder"]);
+                if (binder) {
+                    BOOL rb = [binder respondsToSelector:sel];
+                    poc_log(@"PROBE_SM_BINDER binder=%@ resp=%d", poc_cls(binder), rb);
+                    unsigned int bc = 0;
+                    Method *bl = class_copyMethodList([binder class], &bc);
+                    if (bl) {
+                        for (unsigned int i = 0; i < bc; i++) {
+                            SEL bs = method_getName(bl[i]);
+                            NSString *bn = bs ? NSStringFromSelector(bs) : @"";
+                            if (bn.length && [bn containsString:@"Present"]) poc_log(@"PROBE_BINDER_METH %@", bn);
+                        }
+                        free(bl);
+                    }
+                } else {
+                    poc_log(@"PROBE_SM_BINDER binder=nil");
+                }
+                // 协议
+                unsigned int pc = 0;
+                Protocol * const *pl = class_copyProtocolList([sm class], &pc);
+                if (pl) {
+                    for (unsigned int i = 0; i < pc; i++) {
+                        const char *pn = protocol_getName(pl[i]);
+                        if (pn) poc_log(@"PROBE_SM_PROTO %s", pn);
+                    }
+                    free(pl);
+                }
+            }
+        } @catch (NSException *e) { poc_log(@"PROBE_SM_METH_EXC %@", e.name); }
         // v0.6.18: SBMainDisplaySceneManager 实例获取尝试（非 sharedInstance）
         @try {
             Class c = NSClassFromString(@"SBMainDisplaySceneManager");
@@ -4070,7 +4120,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.18 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.19 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
