@@ -1276,6 +1276,7 @@ static BOOL poc_launch_app(NSString *bundle);            // v0.4.35: 前向声�
 static NSString *poc_current_bundle(void);               // v0.4.35: 前向声明（同上）
 static BOOL poc_setting_bool(NSString *key, BOOL def);   // v0.4.0 前向声明（设置读取，定义在下方全局区）
 static NSString *poc_frontmost_bundle(void);   // v0.6.15: 选择器段需要（定义在下方）
+static NSString *poc_setting_str(NSString *key, NSString *def);   // v0.6.29: frontmost 兜底需要（定义在下方）
 
 @interface QSFloatContainer : UIView
 @property (nonatomic, strong) UIView *contentView;
