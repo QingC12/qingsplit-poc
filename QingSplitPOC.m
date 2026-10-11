@@ -2270,7 +2270,37 @@ static void qs_hook_selfheal(void) {
 }
 static void qs_install_deact_obs_hook(void) {
     @try {
-        void *lib = dlopen("/var/jb/usr/lib/libellekit.dylib", RTLD_NOW);
+        // v0.6.35: ellekit 多路径 dlopen（Dopamine rootless 库名/路径差异）
+        void *lib = NULL;
+        NSArray *libPaths = @[
+            @"/var/jb/usr/lib/libellekit.dylib",
+            @"/var/jb/usr/lib/libsubstrate.dylib",
+            @"/usr/lib/libellekit.dylib",
+            @"/usr/lib/libsubstrate.dylib",
+            @"/var/jb/usr/lib/substrate/libsubstrate.dylib",
+        ];
+        for (NSString *lp in libPaths) {
+            lib = dlopen(lp.UTF8String, RTLD_NOW);
+            if (lib) { poc_log(@"HOOK_LIB_OK %@", lp); break; }
+        }
+        if (!lib) {
+            // 兜底：直接搜索 /var/jb/usr/lib 下含 ellekit/substrate 的 dylib（探针）
+            @try {
+                NSArray *dirs = @[@"/var/jb/usr/lib", @"/usr/lib"];
+                NSFileManager *fm = [NSFileManager defaultManager];
+                for (NSString *d in dirs) {
+                    NSArray *items = [fm contentsOfDirectoryAtPath:d error:NULL];
+                    for (NSString *it in items) {
+                        if ([it containsString:@"ellekit"] || [it containsString:@"substrate"] || [it containsString:@"Substrate"]) {
+                            NSString *fp = [d stringByAppendingPathComponent:it];
+                            lib = dlopen(fp.UTF8String, RTLD_NOW);
+                            if (lib) { poc_log(@"HOOK_LIB_FOUND %@", fp); break; }
+                        }
+                    }
+                    if (lib) break;
+                }
+            } @catch (NSException *e) { }
+        }
         if (!lib) { poc_log(@"HOOK_NO_ELLEKIT"); return; }
         int (*hook)(Class, SEL, IMP, IMP *) = (int (*)(Class, SEL, IMP, IMP *))dlsym(lib, "MSHookMessageEx");
         if (!hook) { poc_log(@"HOOK_NO_MSHOOK"); return; }
@@ -4603,7 +4633,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.34 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.35 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
