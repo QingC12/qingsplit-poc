@@ -2229,6 +2229,19 @@ static void qs_deact_obs(id self, SEL _cmd, id reasons, id scene, id settings, i
     }
     if (qs_deact_orig) ((void (*)(id, SEL, id, id, id, id))qs_deact_orig)(self, _cmd, reasons, scene, settings, reason);
 }
+static void qs_beat_write(NSString *path) {
+    @try {
+        [[NSString stringWithFormat:@"%lld", (long long)[[NSDate date] timeIntervalSince1970]]
+            writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    } @catch (NSException *e) { }
+}
+static long long qs_beat_read(NSString *path) {
+    @try {
+        NSString *s = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+        return s ? (long long)[s longLongValue] : 0;
+    } @catch (NSException *e) { }
+    return 0;
+}
 static BOOL qs_hook_flag_exists(void) {
     return [[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/qsp_hook_enable"];
 }
@@ -3000,10 +3013,23 @@ static void poc_keep_float(void) {
                                     NSString *iid = poc_scene_id(sc);
                                     if (wsid && [iid isEqualToString:wsid]) {
                                         scid = iid;
-                                        // FBScene 无 activationState 键 → 从 settings 层拿（v0.6.33 修 NSUnknownKeyException）
-                                        id settings = [sc valueForKey:@"settings"];
-                                        if (settings) st = [[settings valueForKey:@"activationState"] integerValue];
-                                        if (st < 0) st = [[sc valueForKey:@"activationState"] integerValue];
+                                        // FBScene 无 activationState 键 → settings 层多键兜底（v0.6.34）
+                                        for (NSString *sk in @[@"settings", @"_settings"]) {
+                                            id settings = [sc valueForKey:sk];
+                                            if (settings) {
+                                                for (NSString *ak in @[@"activationState", @"_activationState"]) {
+                                                    id v = [settings valueForKey:ak];
+                                                    if (v) { st = [v integerValue]; break; }
+                                                }
+                                            }
+                                            if (st >= 0) break;
+                                        }
+                                        if (st < 0) {
+                                            for (NSString *ak in @[@"activationState", @"_activationState"]) {
+                                                id v = [sc valueForKey:ak];
+                                                if (v) { st = [v integerValue]; break; }
+                                            }
+                                        }
                                         break;
                                     }
                                 }
@@ -4577,7 +4603,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.33 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.34 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
@@ -4585,25 +4611,23 @@ static void poc_setup_edge_trigger(void) {
         poc_neutralize_sb_gestures();
         // v0.6.32: hook 崩溃自愈（删除标记 → 下次无 hook）
         qs_hook_selfheal();
-        // v0.6.33: ellekit 防停用观测 hook —— 默认自动启用（上次正常完成才装；上次崩溃自动跳过 = 自愈）
-        // 手动 touch /var/mobile/qsp_hook_enable 可强制启用
-        BOOL lastOk = YES;
-        @try {
-            NSString *stOld = [NSString stringWithContentsOfFile:@"/var/mobile/qsp_poc_state" encoding:NSUTF8StringEncoding error:NULL];
-            if (stOld) {
-                NSArray *parts = [stOld componentsSeparatedByString:@" "];
-                if (parts.count >= 2) lastOk = ([parts[1] integerValue] == 1);
-            }
-        } @catch (NSException *e) { }
+        // v0.6.34: ellekit 防停用观测 hook —— beat 时间戳自愈（闲置启动不误判；真崩溃 120s 内重启才跳过）
+        // 上次启动存活时长：beat_A(启动) → beat_B(hook安装)。崩溃重启通常 <120s；正常使用 >120s
+        long long beatA = qs_beat_read(@"/var/mobile/qsp_hook_beatA");
+        long long beatB = qs_beat_read(@"/var/mobile/qsp_hook_beatB");
+        long long nowT = (long long)[[NSDate date] timeIntervalSince1970];
         BOOL force = qs_hook_flag_exists();
-        if (force || lastOk) {
+        BOOL suspectCrash = (beatB > 0 && (nowT - beatA) < 120);
+        if (force || !suspectCrash) {
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
                 qs_install_deact_obs_hook();
+                qs_beat_write(@"/var/mobile/qsp_hook_beatB");
             });
-            poc_log(@"HOOK_AUTO_ON force=%d lastOk=%d (observation mode)", force ? 1 : 0, lastOk ? 1 : 0);
+            poc_log(@"HOOK_AUTO_ON force=%d suspectCrash=%d gap=%llds (observation mode)", force ? 1 : 0, suspectCrash ? 1 : 0, (long long)(nowT - beatA));
         } else {
-            poc_log(@"HOOK_SKIP lastOk=0 (previous boot incomplete — self-heal, no hook this launch)");
+            poc_log(@"HOOK_SKIP suspectCrash=%d gap=%llds (self-heal, no hook this launch)", suspectCrash ? 1 : 0, (long long)(nowT - beatA));
         }
+        qs_beat_write(@"/var/mobile/qsp_hook_beatA");
         // v0.5.11: 窗口层级快照 —— keyWindow 决定触摸路由（浮窗窗口是否收触摸的关键）
         @try {
             UIWindow *kw = [UIApplication sharedApplication].keyWindow;
