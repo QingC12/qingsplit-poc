@@ -2300,6 +2300,47 @@ static void poc_opening_hide(void);
 // v0.4.35: 当前浮窗目标 bundle（sceneID:xxx-default → xxx）；无浮窗时返回 g_lastSid 解析值
 // v0.6.15: 前台 app bundle（建窗前记录，关闭浮窗时激活回主屏）
 static NSString *poc_frontmost_bundle(void) {
+    // v0.6.27: 可靠前台判断 —— ① UIApplication connectedScenes 的 ForegroundActive scene → sid → bundle
+    @try {
+        for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            NSInteger st = [sc activationState];
+            if (st == UISceneActivationStateForegroundActive) {
+                NSString *sid = poc_scene_id(sc);
+                NSString *b = nil;
+                if ([sid hasPrefix:@"sceneID:"]) {
+                    b = [sid substringFromIndex:@"sceneID:".length];
+                    NSRange dash = [b rangeOfString:@"-"];
+                    if (dash.location != NSNotFound) b = [b substringToIndex:dash.location];
+                }
+                if (b.length) {
+                    poc_log(@"FRONT_SCENE sid=%@ bid=%@", sid, b);
+                    return b;
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    // ② SBApplicationController.runningApplications + 前台多键
+    @try {
+        id ctl = [NSClassFromString(@"SBApplicationController") performSelector:@selector(sharedInstance)];
+        id runs = [ctl valueForKey:@"runningApplications"];
+        NSArray *ra = nil;
+        if ([runs isKindOfClass:[NSArray class]]) ra = runs;
+        else if ([runs isKindOfClass:[NSSet class]]) ra = [runs allObjects];
+        for (id app in ra) {
+            id bid = [app performSelector:@selector(bundleIdentifier)];
+            if (!bid) continue;
+            NSArray *keys = @[@"isFrontmost", @"_isFrontmost", @"frontmost", @"isActive", @"_isActive", @"_frontmost", @"effectiveForeground"];
+            for (NSString *k in keys) {
+                id v = [app valueForKey:k];
+                if (v && [v boolValue]) {
+                    poc_log(@"FRONT_RUN bid=%@ key=%@", [NSString stringWithFormat:@"%@", bid], k);
+                    return [NSString stringWithFormat:@"%@", bid];
+                }
+            }
+        }
+    } @catch (NSException *e) { }
+    // ③ 旧路径（失败回退）
     @try {
         id ws = [NSClassFromString(@"LSApplicationWorkspace") performSelector:@selector(defaultWorkspace)];
         id app = [ws performSelector:@selector(frontmostApplication)];
@@ -3780,6 +3821,22 @@ static void poc_picker_select(NSDictionary *app) {
             }
         }
     } @catch (NSException *e) { }
+    // v0.6.27: 选择器触发时前台状态探针
+    @try {
+        for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+            if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+            NSString *csid = poc_scene_id(sc);
+            NSString *cb = nil;
+            if ([csid hasPrefix:@"sceneID:"]) {
+                cb = [csid substringFromIndex:@"sceneID:".length];
+                NSRange cdash = [cb rangeOfString:@"-"];
+                if (cdash.location != NSNotFound) cb = [cb substringToIndex:cdash.location];
+            }
+            poc_log(@"PICKER_SCENES cls=%@ st=%ld sid=%@ bid=%@", poc_cls(sc), (long)[sc activationState], csid, cb ? cb : @"?");
+        }
+        NSString *fb = poc_frontmost_bundle();
+        poc_log(@"PICKER_FRONT bid=%@", fb.length ? fb : @"nil");
+    } @catch (NSException *e) { }
     NSString *sid = app[@"sid"];
     // v0.5.2: 同 app 去重 —— 已有该 app 浮窗则不再重复建窗（同 scene 双 host 会冲突：
     // 同一 CAContext 被两窗引用 → 手势失效 + SB 呈现错乱），聚焦已有窗即可
@@ -4349,7 +4406,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.26 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.27 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
