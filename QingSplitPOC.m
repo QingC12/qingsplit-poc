@@ -789,6 +789,36 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                 return nil;
             }
             poc_log(@"ADOPT_FOUND sid=%@ node=%@ presenter=%@ pv=%@", sid, poc_cls(node), poc_cls(presenter), poc_cls(pv));
+            // v0.6.21: 呈现重定向探针——binder 激活接口响应性 + presenter 对象结构（纯只读）
+            @try {
+                id binder = nil;
+                for (UIWindow *bw in [[UIApplication sharedApplication] windows]) {
+                    id bsm = poc_tryKVC(bw.windowScene, @[@"_sceneManager", @"sceneManager"]);
+                    if (bsm) { binder = poc_tryKVC(bsm, @[@"presentationBinder", @"_presentationBinder"]); if (binder) break; }
+                }
+                if (binder) {
+                    BOOL rAct = [binder respondsToSelector:sel_registerName("_activatePresenter:scene:reason:")];
+                    BOOL rDea = [binder respondsToSelector:sel_registerName("_deactivatePresenter:scene:reason:")];
+                    BOOL rPos = [binder respondsToSelector:sel_registerName("_positionPresentationViewInRootViewOrderedCorrectly:")];
+                    BOOL rWill = [binder respondsToSelector:sel_registerName("_noteWillStartPresentingScene:")];
+                    poc_log(@"PROBE_ACT_BINDER class=%@ act=%d dea=%d pos=%d will=%d",
+                            poc_cls(binder), rAct, rDea, rPos, rWill);
+                } else {
+                    poc_log(@"PROBE_ACT_BINDER nil");
+                }
+                id cscene = poc_tryKVC(node, @[@"_scene", @"scene"]);
+                id pview = poc_tryKVC(presenter, @[@"containerView", @"_containerView", @"rootView", @"_rootView"]);
+                id pscene = poc_tryKVC(presenter, @[@"scene", @"_scene"]);
+                id pman = poc_tryKVC(presenter, @[@"presentationManager", @"_presentationManager"]);
+                NSString *pdesc = [presenter respondsToSelector:@selector(description)] ? [presenter description] : @"";
+                poc_log(@"PROBE_PRESENTER class=%@ scene=%@ pman=%@ view=%@ desc=%@",
+                        poc_cls(presenter), poc_cls(pscene), poc_cls(pman), poc_cls(pview),
+                        pdesc.length > 160 ? [pdesc substringToIndex:160] : pdesc);
+                poc_log(@"PROBE_PRESENTER_SCENE class=%@ state=%d", poc_cls(cscene),
+                        [poc_tryKVC(cscene, @[@"activationState", @"_activationState", @"state"]) intValue]);
+            } @catch (NSException *e) {
+                poc_log(@"PROBE_ACT_EXC %@", e.name);
+            }
             return (UIView *)pv;
         }
         poc_log(@"ADOPT_NOCONTAINER sid=%@", sid);
@@ -4162,7 +4192,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.20 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.21 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
