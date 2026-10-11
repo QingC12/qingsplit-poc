@@ -819,6 +819,43 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
             } @catch (NSException *e) {
                 poc_log(@"PROBE_ACT_EXC %@", e.name);
             }
+            // v0.6.22: 枚举全部 app scene + presenter 存活状态（找主屏 app 后台 scene）
+            @try {
+                id sm2 = nil;
+                for (UIWindow *sw in [[UIApplication sharedApplication] windows]) {
+                    sm2 = poc_tryKVC(sw.windowScene, @[@"_sceneManager", @"sceneManager"]);
+                    if (sm2) break;
+                }
+                if (sm2) {
+                    NSArray *runs = poc_tryKVC(sm2, @[@"runningApplicationScenes"]);
+                    NSArray *exts = poc_tryKVC(sm2, @[@"externalApplicationSceneHandles"]);
+                    NSMutableArray *allH = [NSMutableArray array];
+                    if ([runs isKindOfClass:[NSArray class]]) [allH addObjectsFromArray:runs];
+                    if ([exts isKindOfClass:[NSArray class]]) [allH addObjectsFromArray:exts];
+                    poc_log(@"PROBE_SCENE_LIST total=%lu", (unsigned long)allH.count);
+                    for (id h in allH) {
+                        id ident = poc_tryKVC(h, @[@"sceneIdentity", @"_sceneIdentity", @"identity", @"_identity"]);
+                        NSString *bid = poc_str(poc_tryKVC(ident, @[@"applicationBundleIdentifier", @"bundleIdentifier", @"_bundleIdentifier"]));
+                        NSString *pid = poc_str(poc_tryKVC(ident, @[@"persistenceIdentifier", @"_persistenceIdentifier"]));
+                        id fsc = poc_tryKVC(h, @[@"_scene", @"scene"]);
+                        if (!fsc) fsc = h;
+                        int st = [poc_tryKVC(fsc, @[@"activationState", @"_activationState", @"state"]) intValue];
+                        id pm3 = poc_tryKVC(fsc, @[@"presentationManager", @"_presentationManager"]);
+                        id pr3 = pm3 ? poc_tryKVC(pm3, @[@"presenter", @"_presenter"]) : nil;
+                        if (!pr3 && [fsc respondsToSelector:@selector(presenter)]) pr3 = [fsc presenter];
+                        if (!pr3) pr3 = poc_tryKVC(fsc, @[@"presenter", @"_presenter"]);
+                        poc_log(@"PROBE_SCENE id=%@ bid=%@ cls=%@ act=%d pres=%@ pv=%@",
+                                pid.length ? pid : @"?", bid.length ? bid : @"?",
+                                poc_cls(h), st,
+                                pr3 ? poc_cls(pr3) : @"nil",
+                                pr3 ? poc_cls(poc_tryKVC(pr3, @[@"presentationView", @"_presentationView", @"view"])) : @"-");
+                    }
+                } else {
+                    poc_log(@"PROBE_SCENE_LIST sm=nil");
+                }
+            } @catch (NSException *e) {
+                poc_log(@"PROBE_SCENE_EXC %@", e.name);
+            }
             return (UIView *)pv;
         }
         poc_log(@"ADOPT_NOCONTAINER sid=%@", sid);
@@ -4192,7 +4229,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.21 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.22 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
