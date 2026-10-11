@@ -863,23 +863,65 @@ static void poc_probe_presentable(NSString *targetSid) {
                     }
                     free(ml);
                 }
-                // presentationBinder
+                // presentationBinder（v0.6.20: 父类链全方法枚举——presentPresentable 可能在其父类）
                 id binder = poc_tryKVC(sm, @[@"presentationBinder", @"_presentationBinder"]);
                 if (binder) {
                     BOOL rb = [binder respondsToSelector:sel];
                     poc_log(@"PROBE_SM_BINDER binder=%@ resp=%d", poc_cls(binder), rb);
-                    unsigned int bc = 0;
-                    Method *bl = class_copyMethodList([binder class], &bc);
-                    if (bl) {
-                        for (unsigned int i = 0; i < bc; i++) {
-                            SEL bs = method_getName(bl[i]);
-                            NSString *bn = bs ? NSStringFromSelector(bs) : @"";
-                            if (bn.length && [bn containsString:@"Present"]) poc_log(@"PROBE_BINDER_METH %@", bn);
+                    Class bc = [binder class];
+                    int depth = 0;
+                    while (bc && depth < 6) {
+                        unsigned int mc = 0;
+                        Method *ml = class_copyMethodList(bc, &mc);
+                        if (ml) {
+                            for (unsigned int i = 0; i < mc; i++) {
+                                SEL ms = method_getName(ml[i]);
+                                NSString *mn = ms ? NSStringFromSelector(ms) : @"";
+                                if (mn.length && ([mn containsString:@"present"] || [mn containsString:@"Present"] || [mn containsString:@"Presentable"])) {
+                                    poc_log(@"PROBE_BINDER_METH depth=%d class=%@ %@", depth, NSStringFromClass(bc), mn);
+                                }
+                            }
+                            free(ml);
                         }
-                        free(bl);
+                        // 每层全量 dump 一次（只第一层全部，上层只 present 相关）
+                        if (depth == 0) {
+                            unsigned int mc2 = 0;
+                            Method *ml2 = class_copyMethodList(bc, &mc2);
+                            if (ml2) {
+                                for (unsigned int i = 0; i < mc2; i++) {
+                                    SEL ms2 = method_getName(ml2[i]);
+                                    NSString *mn2 = ms2 ? NSStringFromSelector(ms2) : @"";
+                                    if (mn2.length) poc_log(@"PROBE_BINDER_ALL %@", mn2);
+                                }
+                                free(ml2);
+                            }
+                        }
+                        bc = class_getSuperclass(bc);
+                        depth++;
                     }
                 } else {
                     poc_log(@"PROBE_SM_BINDER binder=nil");
+                }
+                // v0.6.20: SBMainDisplaySceneManager 父类链的 present 方法（父类可能持有）
+                {
+                    Class sc = [sm class];
+                    int depth = 0;
+                    while (sc && depth < 5) {
+                        unsigned int mc = 0;
+                        Method *ml = class_copyMethodList(sc, &mc);
+                        if (ml) {
+                            for (unsigned int i = 0; i < mc; i++) {
+                                SEL ms = method_getName(ml[i]);
+                                NSString *mn = ms ? NSStringFromSelector(ms) : @"";
+                                if (mn.length && ([mn containsString:@"present"] || [mn containsString:@"Presentable"])) {
+                                    poc_log(@"PROBE_SM_SUPER_METH depth=%d class=%@ %@", depth, NSStringFromClass(sc), mn);
+                                }
+                            }
+                            free(ml);
+                        }
+                        sc = class_getSuperclass(sc);
+                        depth++;
+                    }
                 }
                 // 协议
                 unsigned int pc = 0;
@@ -4120,7 +4162,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.19 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.20 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
