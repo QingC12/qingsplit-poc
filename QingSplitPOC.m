@@ -943,6 +943,33 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                             }
                         }
                     }
+                    // v0.6.26: SBApplicationController.runningApplications 枚举 → 识别前台 app
+                    @try {
+                        Class sbc2 = NSClassFromString(@"SBApplicationController");
+                        id shared2 = [sbc2 performSelector:NSSelectorFromString(@"sharedInstanceIfExists")];
+                        if (!shared2) shared2 = [sbc2 performSelector:NSSelectorFromString(@"sharedInstance")];
+                        if (shared2) {
+                            id runs = poc_tryKVC(shared2, @[@"runningApplications", @"_runningApplications"]);
+                            NSArray *ra = nil;
+                            if ([runs isKindOfClass:[NSArray class]]) ra = runs;
+                            else if ([runs isKindOfClass:[NSSet class]]) ra = [runs allObjects];
+                            poc_log(@"PROBE_RUN_APPS total=%lu", (unsigned long)ra.count);
+                            for (id app in ra) {
+                                NSString *bid = poc_str([app performSelector:NSSelectorFromString(@"bundleIdentifier")]);
+                                NSString *dn = poc_str([app performSelector:NSSelectorFromString(@"displayName")]);
+                                if (!dn.length) dn = poc_str(poc_tryKVC(app, @[@"displayName", @"_displayName"]));
+                                int act = [poc_tryKVC(app, @[@"activationState", @"_activationState", @"state", @"_state"]) intValue];
+                                id pidv = poc_tryKVC(app, @[@"pid", @"_pid", @"processIdentifier"]);
+                                NSString *bid2 = bid.length ? bid : @"?";
+                                NSString *dn2 = dn.length ? dn : @"?";
+                                poc_log(@"PROBE_RUN_APP bid=%@ name=%@ act=%d pid=%@", bid2, dn2, act, poc_str(pidv));
+                            }
+                        } else {
+                            poc_log(@"PROBE_RUN_APPS nosc");
+                        }
+                    } @catch (NSException *e) {
+                        poc_log(@"PROBE_RUN_APPS_EXC %@", e.name);
+                    }
                 } @catch (NSException *e) {
                     poc_log(@"PROBE_SBFRONT_EXC %@", e.name);
                 }
@@ -4322,7 +4349,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.25 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.26 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
