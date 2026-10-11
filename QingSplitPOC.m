@@ -3836,6 +3836,40 @@ static void poc_picker_select(NSDictionary *app) {
         }
         NSString *fb = poc_frontmost_bundle();
         poc_log(@"PICKER_FRONT bid=%@", fb.length ? fb : @"nil");
+        // v0.6.28: SBLayoutState 前台 app scene 探针（SB 布局状态机正确路径）
+        @try {
+            for (UIScene *wsc in [[UIApplication sharedApplication] connectedScenes]) {
+                if (![wsc isKindOfClass:[UIWindowScene class]]) continue;
+                id sm = poc_tryKVC(wsc, @[@"_sceneManager", @"sceneManager"]);
+                if (!sm) continue;
+                id lsm = poc_tryKVC(sm, @[@"layoutStateManager", @"_layoutStateManager"]);
+                if (!lsm) continue;
+                unsigned int lc = 0;
+                Method *ll = class_copyMethodList([lsm class], &lc);
+                if (ll) {
+                    for (unsigned int i = 0; i < lc; i++) {
+                        SEL lsel = method_getName(ll[i]);
+                        NSString *ln = lsel ? NSStringFromSelector(lsel) : @"";
+                        if (ln.length && ([ln containsString:@"front"] || [ln containsString:@"Foreground"] || [ln containsString:@"ctive"] || [ln containsString:@"ceneHandle"])) {
+                            poc_log(@"PROBE_LAYOUT_METH %@", ln);
+                        }
+                    }
+                    free(ll);
+                }
+                // 尝试 KVC 拿前台 handle
+                id fh = poc_tryKVC(lsm, @[@"foregroundApplicationSceneHandle", @"_foregroundApplicationSceneHandle", @"frontmostApplicationSceneHandle", @"_frontmostApplicationSceneHandle", @"activeApplicationSceneHandle", @"_activeApplicationSceneHandle", @"activeSceneHandle", @"_activeSceneHandle"]);
+                if (fh) {
+                    id fident = poc_tryKVC(fh, @[@"sceneIdentity", @"_sceneIdentity", @"identity", @"_identity", @"applicationSceneIdentity"]);
+                    NSString *fbid = fident ? poc_str(poc_tryKVC(fident, @[@"applicationBundleIdentifier", @"bundleIdentifier", @"_bundleIdentifier", @"persistenceIdentifier", @"_persistenceIdentifier"])) : @"";
+                    NSString *fsid = poc_tryKVC(fh, @[@"persistenceIdentifier", @"_persistenceIdentifier"]) ? [NSString stringWithFormat:@"%@", poc_tryKVC(fh, @[@"persistenceIdentifier", @"_persistenceIdentifier"])] : @"";
+                    poc_log(@"PROBE_LAYOUT_FRONT cls=%@ bid=%@ sid=%@", poc_cls(fh), fbid.length ? fbid : @"?", fsid.length ? fsid : @"?");
+                } else {
+                    poc_log(@"PROBE_LAYOUT_FRONT nil");
+                }
+            }
+        } @catch (NSException *e) {
+            poc_log(@"PROBE_LAYOUT_EXC %@", e.name);
+        }
     } @catch (NSException *e) { }
     NSString *sid = app[@"sid"];
     // v0.5.2: 同 app 去重 —— 已有该 app 浮窗则不再重复建窗（同 scene 双 host 会冲突：
@@ -4406,7 +4440,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.27 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.28 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
