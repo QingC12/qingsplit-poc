@@ -900,6 +900,52 @@ static UIView *poc_adopt_presenter_view(NSString *sid) {
                 } @catch (NSException *e) {
                     poc_log(@"PROBE_FRONT_EXC %@", e.name);
                 }
+                // v0.6.25: SB 层前台 app 探测（SBApplicationController / SBWorkspace / SBSceneManagerCoordinator）
+                @try {
+                    Class sbc = NSClassFromString(@"SBApplicationController");
+                    if (sbc) {
+                        id shared = [sbc performSelector:NSSelectorFromString(@"sharedInstanceIfExists")];
+                        if (!shared) @try { shared = [sbc performSelector:NSSelectorFromString(@"sharedInstance")]; } @catch (NSException *e2) {}
+                        if (shared) {
+                            unsigned int fc = 0;
+                            Method *fl = class_copyMethodList([shared class], &fc);
+                            if (fl) {
+                                for (unsigned int i = 0; i < fc; i++) {
+                                    SEL fs = method_getName(fl[i]);
+                                    NSString *fn = fs ? NSStringFromSelector(fs) : @"";
+                                    if (fn.length && ([fn containsString:@"ront" ] || [fn containsString:@"ctive"] || [fn containsString:@"pplication"])) {
+                                        poc_log(@"PROBE_SBAPP_METH %@", fn);
+                                    }
+                                }
+                                free(fl);
+                            }
+                            id fapp2 = poc_tryKVC(shared, @[@"frontmostApplication", @"_frontmostApplication", @"activeApplication", @"_activeApplication", @"_currentApplication"]);
+                            if (fapp2) {
+                                NSString *fbid2 = poc_str([fapp2 performSelector:NSSelectorFromString(@"bundleIdentifier")]);
+                                poc_log(@"PROBE_SB_FRONT class=%@ bid=%@", poc_cls(fapp2), fbid2.length ? fbid2 : @"?");
+                            } else {
+                                poc_log(@"PROBE_SB_FRONT nil");
+                            }
+                        }
+                    }
+                    Class sbws = NSClassFromString(@"SBWorkspace");
+                    if (sbws) {
+                        id wsp = nil;
+                        @try { wsp = [sbws performSelector:NSSelectorFromString(@"mainWorkspace")]; } @catch (NSException *e3) {}
+                        if (!wsp) @try { wsp = [sbws performSelector:NSSelectorFromString(@"sharedInstance")]; } @catch (NSException *e3) {}
+                        if (wsp) {
+                            id fapp3 = poc_tryKVC(wsp, @[@"frontmostApplication", @"_frontmostApplication", @"activeApplication", @"_activeApplication"]);
+                            if (fapp3) {
+                                NSString *fbid3 = poc_str([fapp3 performSelector:NSSelectorFromString(@"bundleIdentifier")]);
+                                poc_log(@"PROBE_SBWS_FRONT class=%@ bid=%@", poc_cls(fapp3), fbid3.length ? fbid3 : @"?");
+                            } else {
+                                poc_log(@"PROBE_SBWS_FRONT nil");
+                            }
+                        }
+                    }
+                } @catch (NSException *e) {
+                    poc_log(@"PROBE_SBFRONT_EXC %@", e.name);
+                }
             } @catch (NSException *e) {
                 poc_log(@"PROBE_SCENE_EXC %@", e.name);
             }
@@ -4276,7 +4322,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.24 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.25 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
