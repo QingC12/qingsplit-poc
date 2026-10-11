@@ -30,6 +30,7 @@
 //
 
 #import <UIKit/UIKit.h>
+#import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <unistd.h>
@@ -2207,6 +2208,70 @@ static void poc_hook_sb_gsm_actions(void) {
         }
     } @catch (NSException *e) {
         poc_log(@"SBGEST_ACT_EXC %@", e.name);
+    }
+}
+// v0.6.32: ellekit 防停用观测 hook（默认关闭 + 崩溃自愈）
+// 安全设计：① 标记文件 /var/mobile/qsp_hook_enable 存在才 hook（默认无 → 安装零风险）
+//          ② 自愈：hook 开启期间 SB 启动未完成（上次无 POC_OK）累计 ≥2 → 自动删标记禁用 hook → 不可能卡开机
+//          ③ dlsym 运行时加载 ellekit MSHookMessageEx（真机已装，构建零依赖），C 函数精确签名（非手写 block）
+//          ④ 观测版只 log + 调原实现，不拦截
+static IMP qs_deact_orig = NULL;
+static void qs_deact_obs(id self, SEL _cmd, id reasons, id scene, id settings, id reason) {
+    static NSTimeInterval lastO = 0;
+    NSTimeInterval nowO = [[NSProcessInfo processInfo] systemUptime];
+    if (nowO - lastO > 1.0) {
+        lastO = nowO;
+        @try {
+            NSString *rs = reason ? [NSString stringWithFormat:@"%@", reason] : @"nil";
+            NSString *sc = scene ? [NSString stringWithFormat:@"%@", scene] : @"nil";
+            poc_log(@"DEACT_OBS sceneCls=%@ sceneDesc=%@ reason=%@", scene ? poc_cls(scene) : @"nil", sc, rs);
+        } @catch (NSException *e) { }
+    }
+    if (qs_deact_orig) ((void (*)(id, SEL, id, id, id, id))qs_deact_orig)(self, _cmd, reasons, scene, settings, reason);
+}
+static BOOL qs_hook_flag_exists(void) {
+    return [[NSFileManager defaultManager] fileExistsAtPath:@"/var/mobile/qsp_hook_enable"];
+}
+static void qs_hook_selfheal(void) {
+    @try {
+        NSString *path = @"/var/mobile/qsp_poc_state";
+        NSString *old = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+        BOOL lastOk = YES;   // 默认视为正常（无状态文件）
+        if (old) {
+            NSArray *parts = [old componentsSeparatedByString:@" "];
+            if (parts.count >= 2) lastOk = ([parts[1] integerValue] == 1);
+        }
+        if (qs_hook_flag_exists() && !lastOk) {
+            NSInteger cnt = 1;
+            NSString *cs = [NSString stringWithContentsOfFile:@"/var/mobile/qsp_hook_crash" encoding:NSUTF8StringEncoding error:NULL];
+            if (cs) cnt = [cs integerValue] + 1;
+            [[NSString stringWithFormat:@"%ld", (long)cnt] writeToFile:@"/var/mobile/qsp_hook_crash" atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            if (cnt >= 2) {
+                [[NSFileManager defaultManager] removeItemAtPath:@"/var/mobile/qsp_hook_enable" error:NULL];
+                poc_log(@"HOOK_SELFHEAL removed flag (crash cnt=%ld) — hook disabled", (long)cnt);
+            } else {
+                poc_log(@"HOOK_CRASH_CNT %ld", (long)cnt);
+            }
+        }
+    } @catch (NSException *e) { }
+}
+static void qs_install_deact_obs_hook(void) {
+    @try {
+        void *lib = dlopen("/var/jb/usr/lib/libellekit.dylib", RTLD_NOW);
+        if (!lib) { poc_log(@"HOOK_NO_ELLEKIT"); return; }
+        int (*hook)(Class, SEL, IMP, IMP *) = (int (*)(Class, SEL, IMP, IMP *))dlsym(lib, "MSHookMessageEx");
+        if (!hook) { poc_log(@"HOOK_NO_MSHOOK"); return; }
+        Class dm = NSClassFromString(@"UIApplicationSceneDeactivationManager");
+        if (!dm) { poc_log(@"HOOK_NO_DM"); return; }
+        SEL sel = sel_registerName("_setDeactivationReasons:onScene:withSettings:reason:");
+        Method m = class_getInstanceMethod(dm, sel);
+        if (!m) { poc_log(@"HOOK_NO_M1"); return; }
+        IMP oldImp = NULL;
+        int r = hook(dm, sel, (IMP)qs_deact_obs, &oldImp);
+        qs_deact_orig = oldImp;
+        poc_log(@"HOOK_OBS_INSTALLED r=%d orig=%p", r, (void *)oldImp);
+    } @catch (NSException *e) {
+        poc_log(@"HOOK_INSTALL_EXC %@", e.name);
     }
 }
 static void poc_neutralize_sb_gestures(void) {
@@ -4509,12 +4574,21 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.31 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.32 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
         // v0.5.10: SB 系统手势中和（触摸截断根因修复）—— 先于一切窗口/手势初始化
         poc_neutralize_sb_gestures();
+        // v0.6.32: hook 崩溃自愈（删除标记 → 下次无 hook）
+        qs_hook_selfheal();
+        // v0.6.32: ellekit 防停用观测 hook —— 标记存在且 SB 稳定后才装（15s 延迟）
+        if (qs_hook_flag_exists()) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                qs_install_deact_obs_hook();
+            });
+            poc_log(@"HOOK_FLAG_ON (observation mode)");
+        }
         // v0.5.11: 窗口层级快照 —— keyWindow 决定触摸路由（浮窗窗口是否收触摸的关键）
         @try {
             UIWindow *kw = [UIApplication sharedApplication].keyWindow;
