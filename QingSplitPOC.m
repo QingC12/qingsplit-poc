@@ -829,6 +829,47 @@ static void poc_probe_presentable(NSString *targetSid) {
                 poc_log(@"PROBE_PRES_CLASS class=%@ inst=%@ resp=0", cn, inst ? NSStringFromClass([inst class]) : @"nil");
             }
         }
+        // v0.6.18: windowScene → _sceneManager 实例（SBMainDisplaySceneManager 不是 sharedInstance）
+        @try {
+            for (UIScene *sc in [[UIApplication sharedApplication] connectedScenes]) {
+                if ([sc isKindOfClass:NSClassFromString(@"UIWindowScene")]) {
+                    id sm = poc_tryKVC(sc, @[@"_sceneManager", @"sceneManager"]);
+                    if (sm) {
+                        BOOL r = [sm respondsToSelector:sel];
+                        poc_log(@"PROBE_PRES_WSSM scene=%@ sm=%@ resp=%d", poc_cls(sc), poc_cls(sm), r);
+                    } else {
+                        poc_log(@"PROBE_PRES_WSSM scene=%@ sm=nil", poc_cls(sc));
+                    }
+                }
+            }
+        } @catch (NSException *e) { poc_log(@"PROBE_PRES_WSSM_EXC %@", e.name); }
+        // v0.6.18: SBMainDisplaySceneManager 实例获取尝试（非 sharedInstance）
+        @try {
+            Class c = NSClassFromString(@"SBMainDisplaySceneManager");
+            NSArray *getters = @[@"mainDisplaySceneManager", @"displaySceneManager",
+                                 @"sharedManager", @"sharedSceneManager", @"mainSceneManager"];
+            for (NSString *gn in getters) {
+                id inst = nil;
+                @try { inst = [c performSelector:NSSelectorFromString(gn)]; } @catch (NSException *e) { }
+                if (inst) {
+                    BOOL r = [inst respondsToSelector:sel];
+                    poc_log(@"PROBE_PRES_GET class=%@ getter=%@ inst=%@ resp=%d", NSStringFromClass(c), gn, poc_cls(inst), r);
+                }
+            }
+            // 枚举类实例方法，找含 present 的
+            unsigned int mc = 0;
+            Method *ml = class_copyMethodList(c, &mc);
+            if (ml) {
+                for (unsigned int i = 0; i < mc; i++) {
+                    SEL ms = method_getName(ml[i]);
+                    NSString *mn = ms ? NSStringFromSelector(ms) : @"";
+                    if (mn.length && ([mn containsString:@"present"] || [mn containsString:@"Present"])) {
+                        poc_log(@"PROBE_PRES_METH class=%@ method=%@", NSStringFromClass(c), mn);
+                    }
+                }
+                free(ml);
+            }
+        } @catch (NSException *e) { poc_log(@"PROBE_PRES_GET_EXC %@", e.name); }
         if (!targetSid.length) return;
         for (UIWindow *w in [[UIApplication sharedApplication] windows]) {
             BOOL matched = NO;
@@ -4029,7 +4070,7 @@ static void poc_setup_edge_trigger(void) {
 }
 + (void)load {
     poc_open_log();
-    poc_log(@"=== QingSplitPOC v0.6.16 LOADED pid=%d ===", (int)getpid());
+    poc_log(@"=== QingSplitPOC v0.6.18 LOADED pid=%d ===", (int)getpid());
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (poc_safety_gate()) return;
         poc_log(@"BOOTSTRAP_START");
